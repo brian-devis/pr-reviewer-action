@@ -1,0 +1,47 @@
+name: PR AI Reviewer
+description: 使用自定义 OpenAI 兼容模型接口审查 Pull Request，并把结果发布到 PR 评论区
+author: brian-devis
+
+inputs:
+  github_token:
+    description: GitHub Token，需要 pull-requests: write 权限
+    required: true
+    default: ${{ github.token }}
+  api_key:
+    description: 模型服务 API Key
+    required: true
+  api_base_url:
+    description: 模型服务地址（OpenAI 兼容协议）
+    required: false
+    default: https://api.openai.com/v1
+  model:
+    description: 模型标识
+    required: false
+    default: gpt-4.1
+  api_format:
+    description: API 协议格式，目前仅支持 openai
+    required: false
+    default: openai
+  max_diff_bytes:
+    description: 发送给模型的 Diff 最大字节数，超出部分会被截断
+    required: false
+    default: "60000"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v5
+      with:
+        go-version: "1.22"
+        cache: false
+    - name: Run reviewer
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      env:
+        INPUT_GITHUB_TOKEN: ${{ inputs.github_token }}
+        INPUT_API_KEY: ${{ inputs.api_key }}
+        INPUT_API_BASE_URL: ${{ inputs.api_base_url }}
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_API_FORMAT: ${{ inputs.api_format }}
+        INPUT_MAX_DIFF_BYTES: ${{ inputs.max_diff_bytes }}
+      run: go run ./cmd/reviewer

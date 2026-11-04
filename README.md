@@ -25,7 +25,7 @@ jobs:
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
-      - uses: brian-devis/pr-reviewer-action@v1
+      - uses: brian-devis/pr-reviewer-action@v0
         with:
           api_key: ${{ secrets.LLM_API_KEY }}
           api_base_url: https://api.deepseek.com
@@ -49,7 +49,8 @@ jobs:
 
 ## 版本与分发
 
-- `@v1`：跟随 v1 系列的最新发布；`@v1.2.3`：固定版本。两者都会下载预编译二进制，并用 Release 里的 `checksums.txt` 校验，失败时自动退回从源码构建。
+- 目前处于 0.x 阶段，输入参数仍可能调整。`@v0` 跟随 0.x 系列的最新发布；`@v0.2.1` 固定到具体版本，需要稳定行为时建议用这种。接口稳定后会发布 `v1.0.0`，届时可以用 `@v1`。
+- 引用 `@v0` 或 `@vX.Y.Z` 时都会下载预编译二进制，并用 Release 里的 `checksums.txt` 校验，失败时自动退回从源码构建。早于 v0.2.1 的版本没有校验和文件，会直接从源码构建。
 - 引用分支（如 `@main`）会从源码构建，需要 runner 能下载 Go 工具链。
 - 预编译二进制只提供 Linux（amd64 / arm64）。校验和与二进制来自同一个 Release，能发现下载损坏，但不能防御 Release 本身被篡改。
 

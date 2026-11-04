@@ -50,7 +50,7 @@ jobs:
 
 | 名称 | 默认值 | 说明 |
 |---|---|---|
-| `api_key` | 必填 | 模型服务的 API Key，请放在 Secrets 里 |
+| `api_key` | 启用 AI 评审时必填 | 模型服务的 API Key，请放在 Secrets 里；只运行沙盒时不需要 |
 | `api_format` | `openai` | 协议格式：`openai`（Chat Completions 兼容）或 `anthropic`（原生 Messages API） |
 | `api_base_url` | 按协议 | 服务地址。留空时 `openai` 用 `https://api.openai.com/v1`，`anthropic` 用 `https://api.anthropic.com`。`openai` 会拼接 `/chat/completions`，`anthropic` 会拼接 `/v1/messages`（地址已以 `/v1` 结尾则不重复） |
 | `model` | 按协议 | 模型标识。留空时 `openai` 用 `gpt-4.1`，`anthropic` 用 `claude-sonnet-5-5` |
@@ -59,6 +59,16 @@ jobs:
 | `max_requests` | `5` | 单个 PR 最多发起的模型请求数，超出的文件不审查，并在总评里点名 |
 | `fail_on` | `never` | 达到该严重度时把 commit status 设为失败：`never` 只提示；`error` 有 🔴 就失败；`warning` 有 🔴 或 🟡 就失败 |
 | `status_context` | `ai-review` | commit status 的名称，设为必需检查时在分支保护里选它 |
+| `enable_ai_review` | `true` | 是否启用 AI 评审。设为 `false` 时不会初始化模型，也不要求任何模型配置 |
+| `enable_sandbox` | `false` | 是否启用沙盒测试，见下文“沙盒测试” |
+| `sandbox_image` | 按项目 | 沙盒镜像，如 `golang:1.25`；Go 项目不填则按 `go.mod` 选择 |
+| `sandbox_test_command` | Go 项目 `go test ./...` | 沙盒里的测试命令 |
+| `sandbox_lint_command` | Go 项目 `go vet ./...` | 沙盒里的 Lint 命令 |
+| `sandbox_memory` | `1g` | 每个容器的内存上限 |
+| `sandbox_cpus` | `1` | 每个容器的 CPU 上限 |
+| `sandbox_timeout` | `5m` | 每个步骤的超时，最长 `1h` |
+| `sandbox_network` | `none` | 目前只支持 `none` |
+| `sandbox_status_context` | `sandbox-tests` | 沙盒 commit status 的名称 |
 | `exclude_paths` | 空 | 额外排除的路径，逗号或换行分隔；`dir/` 表示目录，`*.md` 之类按 `path.Match` 匹配（不支持 `**`） |
 
 ## 作为合并门禁
@@ -69,6 +79,78 @@ jobs:
 - 启用了 `fail_on` 但审查不完整（有模型请求失败、返回无法解析、或有文件因 `max_requests` 被跳过）时，状态是 `error`，不会在没审完的情况下显示通过。
 - 步骤本身的退出码不受 `fail_on` 影响，是否阻断合并由状态检查和分支保护决定。
 - 模型的判断有随机性，同一份代码两次运行可能结果不同。建议先用 `fail_on: never` 观察一段时间，再决定是否设为必需检查。
+
+## 沙盒测试
+
+在断网、限制资源的 Docker 容器里运行测试和 Lint，把结果写进 PR 总评和独立的 `sandbox-tests` commit status。**它独立于 AI 评审**：不配置任何模型也能运行，反过来也一样。
+
+| `enable_ai_review` | `enable_sandbox` | 行为 |
+|---|---|---|
+| `true`（默认） | `false`（默认） | 只做 AI 评审 |
+| `true` | `true` | AI 评审 + 沙盒检查，结果合并在同一条总评里 |
+| `false` | `true` | 只运行测试和 Lint，不要求 `api_key`、`api_base_url`、`model` |
+| `false` | `false` | 什么都不做，不访问任何外部服务 |
+
+只开沙盒的最小示例（沙盒需要代码，所以要先 checkout）：
+
+```yaml
+permissions:
+  contents: read
+  pull-requests: write
+  statuses: write
+
+jobs:
+  sandbox:
+    runs-on: ubuntu-latest   # 只支持 Linux runner
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: brian-devis/pr-reviewer-action@v0
+        with:
+          enable_ai_review: "false"
+          enable_sandbox: "true"
+          sandbox_test_command: go test ./...
+          sandbox_lint_command: go vet ./...
+```
+
+### 怎么运行
+
+1. **准备依赖（仅 Go 项目，联网）**：在一个受限容器里执行 `go mod download` 把依赖下载到临时目录。这一步只下载模块，不执行 PR 里的代码，同样没有任何密钥、同样限制资源。
+2. **运行测试**：独立容器，断网，依赖目录只读挂载。
+3. **运行 Lint**：另一个独立容器，同样断网。即使测试失败也会继续运行 Lint，两者结果分开记录。
+
+每个容器：内存 `sandbox_memory`（默认 1g，且不允许使用 swap）、CPU `sandbox_cpus`（默认 1）、最多 256 个进程、去掉所有 Linux capabilities、禁止提权、以非 root 用户（65534）运行、根文件系统只读（仅 `/tmp` 可写）、超时 `sandbox_timeout`（默认 5m）后强制终止并删除。
+
+代码使用**临时工作副本**：不会直接挂载 checkout 目录，并且**不复制 `.git`**（`actions/checkout` 默认会把 GitHub Token 写在 `.git/config` 里，复制进去就等于让 PR 代码读到令牌）。符号链接按原样保留，不会被跟进去读取。
+
+### commit status
+
+写到 PR 的 **head 提交**（不是 `pull_request` 默认检出的合并提交），名称 `sandbox-tests`，并带有指向本次运行日志的链接。
+
+| 情况 | state | description |
+|---|---|---|
+| 开始执行 | `pending` | Sandbox checks running |
+| 测试和 Lint 都通过 | `success` | All sandbox checks passed |
+| 测试或 Lint 没通过（退出码非 0） | `failure` | Sandbox checks failed |
+| Docker 异常、依赖准备失败、超时、内存溢出 | `error` | Sandbox execution error |
+
+没通过是 `failure`，沙盒自身出问题是 `error`，两者不会混在一起：环境问题不会被算成代码问题。
+
+### 命令和镜像
+
+- `sandbox_test_command` / `sandbox_lint_command` 由你在 workflow 里写死，**绝不接受模型生成的命令**。Go 项目不填时默认 `go test ./...` 和 `go vet ./...`；非 Go 项目必须自己填命令。
+- `sandbox_image` 不填时，Go 项目按 `go.mod` 选 `golang:<版本>`。其他语言请自己指定镜像，并且镜像里要已经装好依赖（沙盒不会替你联网安装 `npm`、`pip` 的依赖，因为那会执行 PR 里的安装脚本）。
+- `sandbox_network` 目前只接受 `none`。
+
+### 安全边界与残余风险
+
+- 容器拿不到 `GITHUB_TOKEN` 和模型 API Key：宿主机环境变量不会传入，没有 `--env-file`，没有挂载 `docker.sock`，容器里也无法再启动别的容器。
+- **沙盒 job 里不要配置模型密钥**。推荐像上面那样把沙盒放在单独的 job 里。
+- **fork 的 PR**：请继续使用 `pull_request` 事件（fork 拿不到 secrets，且 `GITHUB_TOKEN` 是只读的，写状态和评论会失败并只打印警告）。**不要**为了让 fork 能写状态而改用 `pull_request_target` 再检出 fork 代码，那会让不可信代码在有写权限和密钥的环境里运行。
+- 隔离依赖的是 Docker 的默认机制（namespace、cgroup、capability、seccomp），**没有** gVisor、Firecracker 这类额外的沙盒。容器逃逸漏洞仍是残余风险。对完全不信任的来源，建议不要启用，或只在一次性的自托管 runner 上启用。
+- 准备依赖的那一步是联网的。它受资源限制、没有密钥，也不执行 PR 代码，但依赖本身会从你的 Go 模块代理下载。
 
 ## 版本与分发
 

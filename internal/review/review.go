@@ -179,13 +179,35 @@ type Report struct {
 	Orphans   []Comment // 无法定位到行，随总评展示
 	Notes     []string
 	Model     string
+
+	// NoAI 为 true 表示没有启用 AI 评审，总评里不出现 AI 相关的内容。
+	NoAI bool
+	// Sandbox 不为空时，总评里会增加沙盒测试一节。
+	Sandbox *Sandbox
 }
 
-// Render 渲染 PR 讨论区里的总评。
+// Render 渲染 PR 讨论区里的总评。AI 评审和沙盒测试是两个独立的部分，
+// 各自只在启用时出现，同一条评论里合并展示。
 func Render(r Report) string {
 	var b strings.Builder
-	b.WriteString(Marker + "\n## 🤖 AI Code Review\n\n")
+	title := "AI Code Review"
+	if r.NoAI || r.Sandbox != nil {
+		title = "PR Reviewer"
+	}
+	b.WriteString(Marker + "\n## 🤖 " + title + "\n\n")
+	if !r.NoAI {
+		renderAI(&b, r)
+	}
+	if r.Sandbox != nil {
+		renderSandbox(&b, *r.Sandbox)
+	}
+	if !r.NoAI {
+		fmt.Fprintf(&b, "\n<sub>model: %s</sub>", r.Model)
+	}
+	return b.String()
+}
 
+func renderAI(b *strings.Builder, r Report) {
 	var parts []string
 	for _, s := range r.Summaries {
 		if s = Sanitize(strings.TrimSpace(s)); s != "" {
@@ -204,10 +226,10 @@ func Render(r Report) string {
 	for _, c := range append(append([]Comment{}, r.Inline...), r.Orphans...) {
 		counts[c.Severity]++
 	}
-	fmt.Fprintf(&b, "**统计**：审查 %d 个文件 · 发现 %d 个问题（🔴 %d · 🟡 %d · 🔵 %d）\n",
+	fmt.Fprintf(b, "**统计**：审查 %d 个文件 · 发现 %d 个问题（🔴 %d · 🟡 %d · 🔵 %d）\n",
 		r.Files, total, counts["error"], counts["warning"], counts["info"])
 	if len(r.Inline) > 0 {
-		fmt.Fprintf(&b, "\n其中 %d 条已作为行内评论发布，见 Files changed。\n", len(r.Inline))
+		fmt.Fprintf(b, "\n其中 %d 条已作为行内评论发布，见 Files changed。\n", len(r.Inline))
 	}
 
 	if len(r.Orphans) > 0 {
@@ -218,12 +240,10 @@ func Render(r Report) string {
 			if c.Line > 0 {
 				loc = fmt.Sprintf("%s:%d", c.File, c.Line)
 			}
-			fmt.Fprintf(&b, "- %s `%s` %s\n", severityEmoji[c.Severity], loc, msg)
+			fmt.Fprintf(b, "- %s `%s` %s\n", severityEmoji[c.Severity], loc, msg)
 		}
 	}
 	for _, n := range r.Notes {
-		fmt.Fprintf(&b, "\n> ⚠️ %s\n", n)
+		fmt.Fprintf(b, "\n> ⚠️ %s\n", n)
 	}
-	fmt.Fprintf(&b, "\n<sub>model: %s</sub>", r.Model)
-	return b.String()
 }

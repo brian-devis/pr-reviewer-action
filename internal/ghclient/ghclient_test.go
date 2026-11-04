@@ -113,7 +113,7 @@ func TestCreateReviewOmitsEmptyCommit(t *testing.T) {
 func TestCreateStatus(t *testing.T) {
 	c, reqs := newServer(t, func(*http.Request, string) (int, string) { return 201, `{}` })
 	long := "🔴" + strings.Repeat("长", 200)
-	if err := c.CreateStatus(context.Background(), "abc123", "failure", "ai-review", long); err != nil {
+	if err := c.CreateStatus(context.Background(), "abc123", "failure", "ai-review", long, "https://example.com/run/1"); err != nil {
 		t.Fatal(err)
 	}
 	req := (*reqs)[0]
@@ -124,7 +124,7 @@ func TestCreateStatus(t *testing.T) {
 	if err := json.Unmarshal([]byte(req.body), &p); err != nil {
 		t.Fatal(err)
 	}
-	if p["state"] != "failure" || p["context"] != "ai-review" {
+	if p["state"] != "failure" || p["context"] != "ai-review" || p["target_url"] != "https://example.com/run/1" {
 		t.Fatalf("payload 异常: %s", req.body)
 	}
 	if n := len([]rune(p["description"])); n != 140 {
@@ -134,6 +134,16 @@ func TestCreateStatus(t *testing.T) {
 		if r > 0xFFFF {
 			t.Fatalf("4 字节 Unicode 应被过滤: %q", p["description"])
 		}
+	}
+}
+
+func TestCreateStatusOmitsEmptyTargetURL(t *testing.T) {
+	c, reqs := newServer(t, func(*http.Request, string) (int, string) { return 201, `{}` })
+	if err := c.CreateStatus(context.Background(), "abc", "success", "sandbox-tests", "ok", ""); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains((*reqs)[0].body, "target_url") {
+		t.Fatalf("空的 target_url 不应出现在 payload: %s", (*reqs)[0].body)
 	}
 }
 

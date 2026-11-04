@@ -9,15 +9,19 @@ permissions:
   pull-requests: write
 
 jobs:
-  review:
-    # fork 的 PR 拿不到 secrets，跳过
-    if: github.event.pull_request.head.repo.full_name == github.repository
+  by-exact-tag:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: ./
+      - uses: brian-devis/pr-reviewer-action@v0.2.1
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          api_key: ${{ secrets.LLM_API_KEY }}
+          api_base_url: ${{ vars.LLM_API_BASE_URL || 'https://api.openai.com/v1' }}
+          model: ${{ vars.LLM_MODEL || 'gpt-4.1' }}
+  by-major-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: brian-devis/pr-reviewer-action@v0
+        with:
           api_key: ${{ secrets.LLM_API_KEY }}
           api_base_url: ${{ vars.LLM_API_BASE_URL || 'https://api.openai.com/v1' }}
           model: ${{ vars.LLM_MODEL || 'gpt-4.1' }}

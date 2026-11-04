@@ -76,7 +76,7 @@ func (d Docker) Run(ctx context.Context, s Spec) Result {
 	if res.TimedOut {
 		d.remove(s.Name)
 	} else if res.Err == nil {
-		res.OOM = d.oomKilled(s.Name)
+		res.OOM = d.detectOOM(s.Name, res.ExitCode)
 	}
 
 	out, truncated := tail.String()
@@ -86,6 +86,30 @@ func (d Docker) Run(ctx context.Context, s Spec) Result {
 	}
 	res.Status = Classify(res)
 	return res
+}
+
+// sigkillExit 是进程被 SIGKILL 杀掉时的退出码（128 + 9），OOM killer 用的就是这个信号。
+const sigkillExit = 137
+
+// detectOOM 判断容器是否因为超出内存限制被杀。
+//
+// docker run 返回时，容器的 State.OOMKilled 可能还没有更新（CI 里实测：立刻查询读到 false，
+// 稍后再查是 true）。所以退出码是 137 时，隔一小会儿重试几次再下结论；其他退出码不可能是
+// OOM 造成的，不需要等待。
+func (d Docker) detectOOM(name string, exitCode int) bool {
+	if d.oomKilled(name) {
+		return true
+	}
+	if exitCode != sigkillExit {
+		return false
+	}
+	for i := 0; i < 5; i++ {
+		time.Sleep(300 * time.Millisecond)
+		if d.oomKilled(name) {
+			return true
+		}
+	}
+	return false
 }
 
 // oomKilled 查询容器是否因为超出内存限制被杀。必须在容器被删除之前调用。

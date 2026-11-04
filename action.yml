@@ -52,17 +52,26 @@ runs:
           aarch64|arm64) arch=arm64 ;;
           *) arch="" ;;
         esac
-        url=""
+        base=""
         if [ -n "$ACTION_REPO" ] && [ -n "$arch" ] && [ "$(uname -s)" = "Linux" ]; then
           case "$ACTION_REF" in
-            v[0-9]*.[0-9]*.[0-9]*) url="https://github.com/$ACTION_REPO/releases/download/$ACTION_REF/reviewer-linux-$arch" ;;
-            v[0-9]*) url="https://github.com/$ACTION_REPO/releases/latest/download/reviewer-linux-$arch" ;;
+            v[0-9]*.[0-9]*.[0-9]*) base="https://github.com/$ACTION_REPO/releases/download/$ACTION_REF" ;;
+            v[0-9]*) base="https://github.com/$ACTION_REPO/releases/latest/download" ;;
           esac
         fi
-        if [ -n "$url" ] && curl -fsSL --retry 3 -o "$RUNNER_TEMP/reviewer" "$url"; then
+        asset="reviewer-linux-$arch"
+        dir="$RUNNER_TEMP/reviewer-dl"
+        # 下载二进制和校验和，校验通过才使用；任何一步失败都退回源码构建
+        if [ -n "$base" ] \
+          && mkdir -p "$dir" \
+          && curl -fsSL --retry 3 -o "$dir/$asset" "$base/$asset" \
+          && curl -fsSL --retry 3 -o "$dir/checksums.txt" "$base/checksums.txt" \
+          && (cd "$dir" && grep "[ *]$asset\$" checksums.txt | sha256sum -c -); then
+          mv "$dir/$asset" "$RUNNER_TEMP/reviewer"
           chmod +x "$RUNNER_TEMP/reviewer"
           echo "REVIEWER_BIN=$RUNNER_TEMP/reviewer" >> "$GITHUB_ENV"
           echo "downloaded=true" >> "$GITHUB_OUTPUT"
+          echo "使用预编译二进制 ($ACTION_REF)，校验和通过"
         else
           echo "未使用预编译二进制，将从源码构建"
           echo "downloaded=false" >> "$GITHUB_OUTPUT"

@@ -101,6 +101,11 @@ func run() error {
 			cfg.MaxRequests, len(skipped), strings.Join(names, "、")))
 	}
 
+	all, dropped := review.Cap(all, review.MaxComments)
+	if dropped > 0 {
+		report.Notes = append(report.Notes, fmt.Sprintf(
+			"模型给出的评论过多，仅保留严重度最高的 %d 条，另有 %d 条被省略。", review.MaxComments, dropped))
+	}
 	inline, orphans := review.Validate(all, byPath)
 	if err := postInline(ctx, gh, cfg, inline); err != nil {
 		// 行内评论提交失败（例如 push 导致行号变化返回 422），退回到总评里展示
@@ -135,27 +140,42 @@ func postInline(ctx context.Context, gh *ghclient.Client, cfg *config.Config, in
 		fmt.Sprintf("🤖 AI 行内审查：%d 条评论", len(fresh)), fresh)
 }
 
-// filterFresh 去掉那些位置上已经有机器人评论的行内评论，转成可提交的格式。
-// 模型每次运行的措辞都会变，所以按文件和行号去重，而不是比较正文。
+// maxBotPerLocation 限制同一行上机器人评论的总数，防止措辞反复变化造成堆积。
+const maxBotPerLocation = 3
+
+// filterFresh 去掉重复的行内评论，转成可提交的格式。
+// 同一位置上，只有当已有的机器人评论都在说别的事时才会追加新评论：
+// 模型每次运行措辞都会变，所以比较的是内容相似度，而不是原文或仅仅是行号。
 func filterFresh(inline []review.Comment, existing []ghclient.ExistingComment) []ghclient.ReviewComment {
-	taken := map[string]bool{}
+	posted := map[string][]string{}
 	for _, e := range existing {
 		if strings.Contains(e.Body, review.Marker) {
-			taken[locKey(e.Path, e.Line)] = true
+			k := locKey(e.Path, e.Line)
+			posted[k] = append(posted[k], e.Body)
 		}
 	}
 	var fresh []ghclient.ReviewComment
 	for _, c := range inline {
 		k := locKey(c.File, int(c.Line))
-		if taken[k] {
+		body := review.RenderInline(c)
+		if len(posted[k]) >= maxBotPerLocation || anySimilar(posted[k], body) {
 			continue
 		}
-		taken[k] = true // 同一位置本次只发一条
+		posted[k] = append(posted[k], body)
 		fresh = append(fresh, ghclient.ReviewComment{
-			Path: c.File, Line: int(c.Line), Side: "RIGHT", Body: review.RenderInline(c),
+			Path: c.File, Line: int(c.Line), Side: "RIGHT", Body: body,
 		})
 	}
 	return fresh
+}
+
+func anySimilar(bodies []string, body string) bool {
+	for _, b := range bodies {
+		if review.Similar(b, body) {
+			return true
+		}
+	}
+	return false
 }
 
 func locKey(path string, line int) string {

@@ -42,14 +42,38 @@ func run() error {
 	}
 	provider := newProvider(cfg, &http.Client{Timeout: 5 * time.Minute})
 
+	// 状态检查失败（例如 workflow 没有 statuses: write 权限）不应该让审查本身失败
+	setStatus := func(state, desc string) {
+		if cfg.HeadSHA == "" {
+			return
+		}
+		if err := gh.CreateStatus(ctx, cfg.HeadSHA, state, cfg.StatusContext, desc); err != nil {
+			fmt.Printf("::warning::设置 commit status 失败（需要 statuses: write 权限）: %v\n", err)
+		}
+	}
+	setStatus(review.StatePending, "AI 审查进行中")
+
+	state, desc, err := execute(ctx, cfg, gh, provider)
+	if err != nil {
+		// 错误详情可能包含接口返回内容，不写进公开的状态描述里
+		setStatus(review.StateError, "审查出错，详见 Actions 日志")
+		return err
+	}
+	setStatus(state, desc)
+	fmt.Printf("commit status: %s（%s）\n", state, desc)
+	return nil
+}
+
+// execute 完成一次审查，返回应当设置的 commit status。
+func execute(ctx context.Context, cfg *config.Config, gh *ghclient.Client, provider llm.Provider) (state, desc string, err error) {
 	raw, err := gh.GetDiff(ctx, cfg.PRNumber)
 	if err != nil {
-		return fmt.Errorf("获取 diff 失败: %w", err)
+		return "", "", fmt.Errorf("获取 diff 失败: %w", err)
 	}
 	files := diff.Select(diff.Parse(raw), cfg.Exclude)
 	if len(files) == 0 {
 		fmt.Println("没有需要审查的文件，跳过")
-		return nil
+		return review.StateSuccess, "没有需要审查的文件", nil
 	}
 	byPath := make(map[string]*diff.File, len(files))
 	for _, f := range files {
@@ -60,7 +84,7 @@ func run() error {
 
 	report := review.Report{Files: len(files) - len(skipped), Model: cfg.Model}
 	var all []review.Comment
-	failures := 0
+	failures, unparsed := 0, 0
 	for i, chunk := range chunks {
 		system, user := review.Prompt(chunk)
 		text, err := provider.Complete(ctx, llm.Request{Model: cfg.Model, System: system, User: user, JSON: true})
@@ -72,6 +96,8 @@ func run() error {
 		}
 		res, ok := review.Parse(text)
 		if !ok {
+			// 解析不出结构化结果，就无法确认这批文件没有问题
+			unparsed++
 			res = review.Result{Summary: text}
 			report.Notes = append(report.Notes, "模型没有返回合法 JSON，已按原文展示，无法生成行内评论。")
 		}
@@ -79,7 +105,7 @@ func run() error {
 		all = append(all, res.Comments...)
 	}
 	if failures == len(chunks) {
-		return errors.New("所有模型请求均失败")
+		return "", "", errors.New("所有模型请求均失败")
 	}
 
 	for _, f := range files {
@@ -99,6 +125,9 @@ func run() error {
 
 	// 先校验再截断：行号无效的评论不应该挤掉有效的高严重度评论
 	inline, orphans := review.Validate(all, byPath)
+	// 统计本次模型发现的全部问题，包括稍后会被去重跳过、不再重复发布的：
+	// 状态要反映“当前代码还有没有问题”，而不是“这次新发了多少条评论”。
+	counts := review.Count(inline, orphans)
 	inline, droppedInline := review.Cap(inline, review.MaxComments)
 	orphans, droppedOrphans := review.Cap(orphans, review.MaxComments)
 	if dropped := droppedInline + droppedOrphans; dropped > 0 {
@@ -115,10 +144,13 @@ func run() error {
 	report.Inline, report.Orphans = inline, orphans
 
 	if err := gh.UpsertComment(ctx, cfg.PRNumber, review.Marker, review.Render(report)); err != nil {
-		return fmt.Errorf("发布评论失败: %w", err)
+		return "", "", fmt.Errorf("发布评论失败: %w", err)
 	}
 	fmt.Printf("审查完成：%d 条行内评论，%d 条总评内问题\n", len(inline), len(orphans))
-	return nil
+
+	incomplete := failures > 0 || unparsed > 0 || len(skipped) > 0
+	state, desc = review.Decide(counts, cfg.FailOn, incomplete)
+	return state, desc, nil
 }
 
 // newProvider 按 api_format 选择模型协议。config.Load 已经保证 format 合法。

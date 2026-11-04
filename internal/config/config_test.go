@@ -105,3 +105,23 @@ func TestLoadExplicitValuesOverrideDefaults(t *testing.T) {
 		t.Fatalf("base=%q model=%q", c.APIBaseURL, c.Model)
 	}
 }
+
+func TestLoadFailOn(t *testing.T) {
+	setupEnv(t, `{"number":1}`)
+	c, err := Load()
+	if err != nil || c.FailOn != "never" || c.StatusContext != "ai-review" {
+		t.Fatalf("默认值错误: %+v err=%v", c, err)
+	}
+
+	t.Setenv("INPUT_FAIL_ON", " Warning ")
+	t.Setenv("INPUT_STATUS_CONTEXT", "my-check")
+	c, err = Load()
+	if err != nil || c.FailOn != "warning" || c.StatusContext != "my-check" {
+		t.Fatalf("自定义值错误: %+v err=%v", c, err)
+	}
+
+	t.Setenv("INPUT_FAIL_ON", "any")
+	if _, err := Load(); err == nil {
+		t.Fatal("无效的 fail_on 应报错")
+	}
+}

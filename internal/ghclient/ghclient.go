@@ -126,6 +126,17 @@ func (c *Client) ListReviewComments(ctx context.Context, pr int) ([]ExistingComm
 	return all, nil
 }
 
+// CreateStatus 给指定提交设置 commit status。描述超过 140 个字符会被截断，
+// 否则 GitHub 会返回 422。同一 context 重复设置会覆盖之前的状态。
+func (c *Client) CreateStatus(ctx context.Context, sha, state, statusContext, description string) error {
+	if r := []rune(description); len(r) > 140 {
+		description = string(r[:139]) + "…"
+	}
+	_, err := c.do(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/statuses/%s", c.Repo, sha), acceptJSON,
+		map[string]string{"state": state, "context": statusContext, "description": description})
+	return err
+}
+
 // CreateReview 一次性提交一个包含多条行内评论的 review。commitSHA 可为空，
 // 为空时 GitHub 使用 PR 的最新提交。
 func (c *Client) CreateReview(ctx context.Context, pr int, commitSHA, body string, comments []ReviewComment) error {

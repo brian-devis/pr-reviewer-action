@@ -8,21 +8,25 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/brian-devis/pr-reviewer-action/internal/review"
 )
 
 type Config struct {
-	GitHubToken  string
-	APIKey       string
-	APIBaseURL   string
-	Model        string
-	APIFormat    string
-	Repo         string
-	GitHubAPI    string
-	HeadSHA      string
-	PRNumber     int
-	MaxDiffBytes int // 单次模型请求携带的 diff 上限
-	MaxRequests  int // 单个 PR 最多发起的模型请求数
-	Exclude      []string
+	GitHubToken   string
+	APIKey        string
+	APIBaseURL    string
+	Model         string
+	APIFormat     string
+	Repo          string
+	GitHubAPI     string
+	HeadSHA       string
+	PRNumber      int
+	MaxDiffBytes  int // 单次模型请求携带的 diff 上限
+	MaxRequests   int // 单个 PR 最多发起的模型请求数
+	Exclude       []string
+	FailOn        string // never | error | warning
+	StatusContext string // commit status 的名称
 }
 
 // formatDefaults 是各 API 协议在用户没有填写 api_base_url / model 时的默认值。
@@ -41,6 +45,12 @@ func Load() (*Config, error) {
 		Repo:        os.Getenv("GITHUB_REPOSITORY"),
 		GitHubAPI:   strings.TrimRight(envDefault("GITHUB_API_URL", "https://api.github.com"), "/"),
 		Exclude:     splitList(os.Getenv("INPUT_EXCLUDE_PATHS")),
+
+		FailOn:        strings.ToLower(envDefault("INPUT_FAIL_ON", "never")),
+		StatusContext: envDefault("INPUT_STATUS_CONTEXT", "ai-review"),
+	}
+	if !review.ValidFailOn(c.FailOn) {
+		return nil, fmt.Errorf("fail_on 取值无效 %q，可选 never、error、warning", c.FailOn)
 	}
 	if c.GitHubToken == "" || c.APIKey == "" || c.Repo == "" {
 		return nil, errors.New("缺少 github_token、api_key 或 GITHUB_REPOSITORY")

@@ -2,7 +2,8 @@ name: Release
 
 on:
   push:
-    tags: ["v*"]
+    # 只匹配 vX.Y.Z；浮动的主版本 tag（v1）由本工作流移动，不会再触发发布
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
 
 permissions:
   contents: write
@@ -23,7 +24,20 @@ jobs:
             CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -ldflags "-s -w" \
               -o "dist/reviewer-linux-$arch" ./cmd/reviewer
           done
+          (cd dist && sha256sum reviewer-linux-* > checksums.txt && cat checksums.txt)
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes
+      - name: Move major version tag
+        run: |
+          # 只有当前 tag 是该主版本下最新的补丁版本时才移动，避免补发旧版本时把 v1 回退
+          major="${GITHUB_REF_NAME%%.*}"
+          git fetch --tags --force origin
+          newest=$(git tag --list "$major.*" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          if [ "$newest" = "$GITHUB_REF_NAME" ]; then
+            git tag -f "$major"
+            git push -f origin "refs/tags/$major"
+          else
+            echo "$GITHUB_REF_NAME 不是 $major 系列的最新版本（最新为 $newest），不移动 $major"
+          fi

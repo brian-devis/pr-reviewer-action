@@ -1,6 +1,7 @@
 package review
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -105,8 +106,19 @@ func TestRenderNoIssues(t *testing.T) {
 
 func TestPrompt(t *testing.T) {
 	sys, user := Prompt([]*diff.File{{Text: "### FILE: a.go\nL1 + x\n"}})
-	if !strings.Contains(sys, "JSON") || !strings.Contains(user, "<diff>") || !strings.Contains(user, "L1 + x") {
+	if !strings.Contains(sys, "JSON") || !strings.Contains(user, "L1 + x") {
 		t.Fatalf("prompt 异常:\n%s\n%s", sys, user)
+	}
+	m := regexp.MustCompile(`<(diff-[0-9a-f]{16})>`).FindStringSubmatch(user)
+	if m == nil {
+		t.Fatalf("用户消息里应有随机标签:\n%s", user)
+	}
+	tag := m[1]
+	if !strings.Contains(user, "</"+tag+">") || !strings.Contains(sys, "<"+tag+">") || strings.Contains(sys, "{{TAG}}") {
+		t.Fatalf("标签在 system 和 user 中不一致:\n%s\n%s", sys, user)
+	}
+	if _, user2 := Prompt(nil); strings.Contains(user2, tag) {
+		t.Fatal("每次调用应使用不同的随机标签")
 	}
 }
 

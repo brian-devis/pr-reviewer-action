@@ -43,6 +43,8 @@ jobs:
           api_key: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
+使用第三方中转站时，请把 `api_base_url` 设为中转站地址，并把 `model` 明确填成该中转站支持的模型名：默认的 `claude-sonnet-5-5` 是官方标识，中转站不一定放行（有的只认 `claude-sonnet-5` 这类名字）。
+
 ## 输入
 
 | 名称 | 默认值 | 说明 |

@@ -112,7 +112,7 @@ func TestCreateReviewOmitsEmptyCommit(t *testing.T) {
 
 func TestCreateStatus(t *testing.T) {
 	c, reqs := newServer(t, func(*http.Request, string) (int, string) { return 201, `{}` })
-	long := strings.Repeat("长", 200)
+	long := "🔴" + strings.Repeat("长", 200)
 	if err := c.CreateStatus(context.Background(), "abc123", "failure", "ai-review", long); err != nil {
 		t.Fatal(err)
 	}
@@ -129,6 +129,11 @@ func TestCreateStatus(t *testing.T) {
 	}
 	if n := len([]rune(p["description"])); n != 140 {
 		t.Fatalf("描述应被截断到 140 个字符，实际 %d", n)
+	}
+	for _, r := range p["description"] {
+		if r > 0xFFFF {
+			t.Fatalf("4 字节 Unicode 应被过滤: %q", p["description"])
+		}
 	}
 }
 

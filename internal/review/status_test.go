@@ -54,8 +54,13 @@ func TestDecide(t *testing.T) {
 			if state != tt.want {
 				t.Fatalf("state=%s, want %s (%s)", state, tt.want, desc)
 			}
-			if desc == "" || len(desc) > 140 {
+			if desc == "" || len([]rune(desc)) > 140 {
 				t.Fatalf("描述为空或超过 GitHub 的 140 字符上限: %q", desc)
+			}
+			for _, r := range desc {
+				if r > 0xFFFF {
+					t.Fatalf("描述含 4 字节 Unicode，GitHub 会返回 422: %q", desc)
+				}
 			}
 		})
 	}
@@ -63,7 +68,7 @@ func TestDecide(t *testing.T) {
 
 func TestDecideDescriptionShowsCounts(t *testing.T) {
 	_, desc := Decide(Counts{Error: 2, Warning: 1}, "error", false)
-	if !strings.Contains(desc, "🔴 2") || !strings.Contains(desc, "🟡 1") {
+	if !strings.Contains(desc, "error 2") || !strings.Contains(desc, "warning 1") {
 		t.Fatalf("描述应带统计: %q", desc)
 	}
 }

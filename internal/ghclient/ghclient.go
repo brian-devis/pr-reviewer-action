@@ -126,9 +126,16 @@ func (c *Client) ListReviewComments(ctx context.Context, pr int) ([]ExistingComm
 	return all, nil
 }
 
-// CreateStatus 给指定提交设置 commit status。描述超过 140 个字符会被截断，
-// 否则 GitHub 会返回 422。同一 context 重复设置会覆盖之前的状态。
+// CreateStatus 给指定提交设置 commit status。GitHub 对描述有两个限制，否则返回 422：
+// 不超过 140 个字符，且不接受 4 字节 Unicode（如 emoji）。这里统一处理。
+// 同一 context 重复设置会覆盖之前的状态。
 func (c *Client) CreateStatus(ctx context.Context, sha, state, statusContext, description string) error {
+	description = strings.Map(func(r rune) rune {
+		if r > 0xFFFF {
+			return -1
+		}
+		return r
+	}, description)
 	if r := []rune(description); len(r) > 140 {
 		description = string(r[:139]) + "…"
 	}

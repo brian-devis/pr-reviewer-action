@@ -42,7 +42,8 @@ func ValidFailOn(s string) bool {
 // fail_on=never 时只做提示，不会阻断合并，除非审查完全没有产出（error 由调用方单独处理）。
 // 启用了阈值但审查不完整时返回 error：没审完就不能声称“通过”。
 func Decide(c Counts, failOn string, incomplete bool) (state, desc string) {
-	summary := fmt.Sprintf("🔴 %d · 🟡 %d · 🔵 %d", c.Error, c.Warning, c.Info)
+	// GitHub 的 status 描述不接受 4 字节 Unicode（emoji），这里只用普通文字
+	summary := fmt.Sprintf("error %d, warning %d, info %d", c.Error, c.Warning, c.Info)
 
 	exceeded := (failOn == "error" && c.Error > 0) || (failOn == "warning" && c.Error+c.Warning > 0)
 	switch {

@@ -1,13 +1,62 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/brian-devis/pr-reviewer-action/internal/config"
+	"github.com/brian-devis/pr-reviewer-action/internal/diff"
 	"github.com/brian-devis/pr-reviewer-action/internal/ghclient"
 	"github.com/brian-devis/pr-reviewer-action/internal/llm"
 	"github.com/brian-devis/pr-reviewer-action/internal/review"
 )
+
+// fakeProvider 按顺序返回预设的回复。
+type fakeProvider struct {
+	replies []string
+	err     error
+	calls   int
+}
+
+func (f *fakeProvider) Complete(context.Context, llm.Request) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	r := f.replies[f.calls]
+	f.calls++
+	return r, nil
+}
+
+const goodReply = `{"summary":"ok","comments":[{"file":"a.go","line":1,"severity":"info","message":"m"}]}`
+
+func TestReviewChunkRetriesOnBadJSON(t *testing.T) {
+	// 第一次是字符串里带未转义引号的坏 JSON，第二次正常
+	p := &fakeProvider{replies: []string{`{"summary":"他说"不行"","comments":[]}`, goodReply}}
+	res, _, ok, err := reviewChunk(context.Background(), p, "m", []*diff.File{{Text: "x"}})
+	if err != nil || !ok || p.calls != 2 || len(res.Comments) != 1 {
+		t.Fatalf("ok=%v err=%v calls=%d res=%+v", ok, err, p.calls, res)
+	}
+}
+
+func TestReviewChunkGivesUpAfterMaxAttempts(t *testing.T) {
+	p := &fakeProvider{replies: []string{"不是 JSON", "还是不是"}}
+	_, text, ok, err := reviewChunk(context.Background(), p, "m", nil)
+	if err != nil || ok || p.calls != maxParseAttempts {
+		t.Fatalf("ok=%v err=%v calls=%d", ok, err, p.calls)
+	}
+	if text != "还是不是" {
+		t.Fatalf("应保留最后一次的原文，got %q", text)
+	}
+}
+
+func TestReviewChunkDoesNotRetryRequestErrors(t *testing.T) {
+	p := &fakeProvider{err: errors.New("401")}
+	_, _, ok, err := reviewChunk(context.Background(), p, "m", nil)
+	if err == nil || ok {
+		t.Fatalf("请求错误应直接返回: ok=%v err=%v", ok, err)
+	}
+}
 
 func TestNewProvider(t *testing.T) {
 	if _, ok := newProvider(&config.Config{APIFormat: "anthropic"}, nil).(*llm.Anthropic); !ok {

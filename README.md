@@ -2,7 +2,7 @@
 
 用大模型审查 Pull Request 的 GitHub Action：拉取 PR 的 diff，调用你指定的模型接口，把问题以**行内评论**发到对应代码行，并在讨论区维护一条总评。
 
-- 模型厂商、模型名、接口地址都可配置，支持任何 OpenAI Chat Completions 兼容的服务（OpenAI、DeepSeek、各类网关和本地模型服务）
+- 模型厂商、模型名、接口地址都可配置：支持 OpenAI Chat Completions 兼容的服务（OpenAI、DeepSeek、各类网关和本地模型服务），以及 Anthropic 原生 Messages API
 - 无需服务器：作为 Action 在 GitHub Runner 上运行，下载预编译的单个二进制
 - 大 PR 自动分批；自动忽略 lockfile、`vendor/`、生成文件等
 - 再次 push 不会刷屏：总评原地更新，已评论过的位置不会重复发
@@ -34,14 +34,25 @@ jobs:
 
 不需要 `actions/checkout`：审查只读取 PR 的 diff。
 
+使用 Anthropic 时只需换协议，地址和模型都有默认值：
+
+```yaml
+      - uses: brian-devis/pr-reviewer-action@v0
+        with:
+          api_format: anthropic
+          api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+使用第三方中转站时，请把 `api_base_url` 设为中转站地址，并把 `model` 明确填成该中转站支持的模型名：默认的 `claude-sonnet-5-5` 是官方标识，中转站不一定放行（有的只认 `claude-sonnet-5` 这类名字）。
+
 ## 输入
 
 | 名称 | 默认值 | 说明 |
 |---|---|---|
 | `api_key` | 必填 | 模型服务的 API Key，请放在 Secrets 里 |
-| `api_base_url` | `https://api.openai.com/v1` | 服务地址，会在其后拼接 `/chat/completions` |
-| `model` | `gpt-4.1` | 模型标识 |
-| `api_format` | `openai` | 目前仅支持 `openai` |
+| `api_format` | `openai` | 协议格式：`openai`（Chat Completions 兼容）或 `anthropic`（原生 Messages API） |
+| `api_base_url` | 按协议 | 服务地址。留空时 `openai` 用 `https://api.openai.com/v1`，`anthropic` 用 `https://api.anthropic.com`。`openai` 会拼接 `/chat/completions`，`anthropic` 会拼接 `/v1/messages`（地址已以 `/v1` 结尾则不重复） |
+| `model` | 按协议 | 模型标识。留空时 `openai` 用 `gpt-4.1`，`anthropic` 用 `claude-sonnet-5-5` |
 | `github_token` | `${{ github.token }}` | 需要 `pull-requests: write` |
 | `max_diff_bytes` | `60000` | 单次模型请求携带的 diff 上限，超出会分批；单个文件超出会被截断 |
 | `max_requests` | `5` | 单个 PR 最多发起的模型请求数，超出的文件不审查，并在总评里点名 |

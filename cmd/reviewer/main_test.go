@@ -3,9 +3,20 @@ package main
 import (
 	"testing"
 
+	"github.com/brian-devis/pr-reviewer-action/internal/config"
 	"github.com/brian-devis/pr-reviewer-action/internal/ghclient"
+	"github.com/brian-devis/pr-reviewer-action/internal/llm"
 	"github.com/brian-devis/pr-reviewer-action/internal/review"
 )
+
+func TestNewProvider(t *testing.T) {
+	if _, ok := newProvider(&config.Config{APIFormat: "anthropic"}, nil).(*llm.Anthropic); !ok {
+		t.Error("anthropic 应使用 Anthropic 实现")
+	}
+	if _, ok := newProvider(&config.Config{APIFormat: "openai"}, nil).(*llm.OpenAI); !ok {
+		t.Error("openai 应使用 OpenAI 实现")
+	}
+}
 
 func bot(path string, line int, c review.Comment) ghclient.ExistingComment {
 	return ghclient.ExistingComment{Path: path, Line: line, Body: review.RenderInline(c)}

@@ -100,13 +100,14 @@ func run() error {
 		}
 	}
 
-	// 两部分的结果合并成同一条总评。AI 没有产出内容（关闭、出错或没有可审查的文件）时，
-	// 总评里只保留沙盒一节，不出现“未发现问题”之类的误导内容。
+	// 同一次运行里两部分都有结果时合并成一条总评。AI 没有产出内容（关闭、出错或没有
+	// 可审查的文件）时，总评里只保留沙盒一节，不出现“未发现问题”之类的误导内容，
+	// 并使用沙盒自己的标记，这样分在不同 job 里运行时两条评论互不覆盖。
 	if ai.reviewed || sandboxSection != nil {
 		rep := ai.report
 		rep.NoAI = !ai.reviewed
 		rep.Sandbox = sandboxSection
-		if err := gh.UpsertComment(ctx, cfg.PRNumber, review.Marker, review.Render(rep)); err != nil {
+		if err := gh.UpsertComment(ctx, cfg.PRNumber, review.CommentMarker(rep), review.Render(rep)); err != nil {
 			runErr = errors.Join(runErr, fmt.Errorf("发布评论失败: %w", err))
 		}
 	}

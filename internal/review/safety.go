@@ -30,7 +30,7 @@ const zeroWidth = "​"
 // 行内代码（成对反引号之间）不受影响，因为那里不会触发提及。
 // 反引号数量为奇数时无法确定哪里是代码，整段按普通文字处理。
 func Sanitize(s string) string {
-	s = strings.ReplaceAll(s, Marker, "")
+	s = strings.ReplaceAll(strings.ReplaceAll(s, Marker, ""), SandboxMarker, "")
 	parts := strings.Split(s, "`")
 	step := 2
 	if len(parts)%2 == 0 { // 反引号个数为奇数

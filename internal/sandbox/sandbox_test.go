@@ -103,6 +103,17 @@ func TestBuildArgsOfflineSetsGoOffline(t *testing.T) {
 	}
 }
 
+func TestBuildArgsGoPathIsWritable(t *testing.T) {
+	// 根文件系统只读，GOPATH 必须指到 tmpfs，否则 go mod download 写校验库缓存会失败
+	for _, network := range []string{"none", "bridge"} {
+		s := baseSpec()
+		s.Network = network
+		if !has(BuildArgs(s), "--env", "GOPATH=/tmp/gopath") {
+			t.Errorf("network=%s 缺少 GOPATH=/tmp/gopath", network)
+		}
+	}
+}
+
 func TestBuildArgsModCacheMount(t *testing.T) {
 	s := baseSpec()
 	s.ModCache = "/tmp/m"

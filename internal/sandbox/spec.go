@@ -59,6 +59,7 @@ func BuildArgs(s Spec) []string {
 		"--mount", "type=bind,source=" + s.WorkDir + ",target=/work",
 		"--env", "HOME=/tmp",
 		"--env", "GOCACHE=/tmp/gocache",
+		"--env", "GOPATH=/tmp/gopath", // 根文件系统只读；go 会把校验库缓存写到 GOPATH 下
 		"--env", "GOTMPDIR=/tmp",
 		"--env", "CGO_ENABLED=0",
 		"--env", "GOTOOLCHAIN=local", // 不让 go 命令在运行时下载别的工具链

@@ -15,7 +15,8 @@ const MaxComments = 30
 const similarThreshold = 0.15
 
 var (
-	mentionRe = regexp.MustCompile(`@([A-Za-z0-9_-]+)`)
+	// 只匹配真正会触发通知的提及：@ 前面不能是字母数字（邮箱里的 @ 不算）
+	mentionRe = regexp.MustCompile(`(^|[^A-Za-z0-9_])@([A-Za-z0-9_-]+)`)
 	headerRe  = regexp.MustCompile(`^\S+ \*\*\w+\*\*：`)
 )
 
@@ -37,7 +38,7 @@ func Sanitize(s string) string {
 	}
 	for i := 0; i < len(parts); i += step {
 		p := strings.ReplaceAll(parts[i], "<!--", "<!"+zeroWidth+"--")
-		parts[i] = mentionRe.ReplaceAllString(p, "@"+zeroWidth+"$1")
+		parts[i] = mentionRe.ReplaceAllString(p, "${1}@"+zeroWidth+"${2}")
 	}
 	return strings.Join(parts, "`")
 }

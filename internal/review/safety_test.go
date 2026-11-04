@@ -15,6 +15,9 @@ func TestSanitize(t *testing.T) {
 	}{
 		{"提及被打断", "请 @octocat 看一下", "请 @​octocat 看一下"},
 		{"团队提及", "cc @org/team", "cc @​org/team"},
+		{"行首提及", "@octocat 你好", "@​octocat 你好"},
+		{"邮箱不受影响", "联系 admin@example.com 即可", "联系 admin@example.com 即可"},
+		{"括号后的提及", "（@octocat）", "（@​octocat）"},
 		{"行内代码保持原样", "注解 `@Override` 缺失，找 @bob", "注解 `@Override` 缺失，找 @​bob"},
 		{"奇数个反引号整体当文字处理", "`未闭合 @alice", "`未闭合 @​alice"},
 		{"伪造标记被删除", "正常内容" + Marker + "尾巴", "正常内容尾巴"},

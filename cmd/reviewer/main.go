@@ -101,12 +101,14 @@ func run() error {
 			cfg.MaxRequests, len(skipped), strings.Join(names, "、")))
 	}
 
-	all, dropped := review.Cap(all, review.MaxComments)
-	if dropped > 0 {
-		report.Notes = append(report.Notes, fmt.Sprintf(
-			"模型给出的评论过多，仅保留严重度最高的 %d 条，另有 %d 条被省略。", review.MaxComments, dropped))
-	}
+	// 先校验再截断：行号无效的评论不应该挤掉有效的高严重度评论
 	inline, orphans := review.Validate(all, byPath)
+	inline, droppedInline := review.Cap(inline, review.MaxComments)
+	orphans, droppedOrphans := review.Cap(orphans, review.MaxComments)
+	if dropped := droppedInline + droppedOrphans; dropped > 0 {
+		report.Notes = append(report.Notes, fmt.Sprintf(
+			"模型给出的评论过多，已按严重度保留最重要的部分，另有 %d 条被省略。", dropped))
+	}
 	if err := postInline(ctx, gh, cfg, inline); err != nil {
 		// 行内评论提交失败（例如 push 导致行号变化返回 422），退回到总评里展示
 		fmt.Printf("::warning::提交行内评论失败，改为写入总评: %v\n", err)

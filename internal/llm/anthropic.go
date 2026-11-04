@@ -28,13 +28,16 @@ type Anthropic struct {
 
 func (a *Anthropic) Complete(ctx context.Context, req Request) (string, error) {
 	// Messages API 没有 JSON 模式，req.JSON 由 prompt 约束，解析端容忍多余文字。
-	body, err := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"model":       req.Model,
 		"max_tokens":  anthropicMaxTokens,
 		"temperature": 0.2,
-		"system":      req.System,
 		"messages":    []map[string]string{{"role": "user", "content": req.User}},
-	})
+	}
+	if req.System != "" { // 空的 system 会被 API 拒绝
+		payload["system"] = req.System
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", err
 	}
@@ -62,6 +65,10 @@ func (a *Anthropic) Complete(ctx context.Context, req Request) (string, error) {
 	}
 	if err := json.Unmarshal(data, &out); err != nil {
 		return "", fmt.Errorf("解析模型响应失败: %w", err)
+	}
+	if out.StopReason == "max_tokens" {
+		// 输出被截断，JSON 必然不完整，直接给出明确原因
+		return "", fmt.Errorf("模型输出被 max_tokens（%d）截断，请减小 max_diff_bytes", anthropicMaxTokens)
 	}
 	// 回复由多个内容块组成，只取文本块（跳过 thinking 等其他类型）
 	var text strings.Builder

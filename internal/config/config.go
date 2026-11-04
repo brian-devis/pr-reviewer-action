@@ -37,7 +37,7 @@ func Load() (*Config, error) {
 		APIKey:      os.Getenv("INPUT_API_KEY"),
 		APIBaseURL:  strings.TrimRight(strings.TrimSpace(os.Getenv("INPUT_API_BASE_URL")), "/"),
 		Model:       strings.TrimSpace(os.Getenv("INPUT_MODEL")),
-		APIFormat:   envDefault("INPUT_API_FORMAT", "openai"),
+		APIFormat:   strings.ToLower(envDefault("INPUT_API_FORMAT", "openai")),
 		Repo:        os.Getenv("GITHUB_REPOSITORY"),
 		GitHubAPI:   strings.TrimRight(envDefault("GITHUB_API_URL", "https://api.github.com"), "/"),
 		Exclude:     splitList(os.Getenv("INPUT_EXCLUDE_PATHS")),

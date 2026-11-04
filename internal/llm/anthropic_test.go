@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -53,6 +54,37 @@ func TestAnthropicEndpoint(t *testing.T) {
 		if got := (&Anthropic{BaseURL: base}).endpoint(); got != want {
 			t.Errorf("endpoint(%q) = %q, want %q", base, got, want)
 		}
+	}
+}
+
+func TestAnthropicOmitsEmptySystem(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		json.Unmarshal(b, &body)
+		io.WriteString(w, `{"content":[{"type":"text","text":"ok"}]}`)
+	}))
+	defer srv.Close()
+
+	a := &Anthropic{BaseURL: srv.URL, APIKey: "k", HTTP: srv.Client()}
+	if _, err := a.Complete(context.Background(), Request{Model: "m", User: "u"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, has := body["system"]; has {
+		t.Fatal("system 为空时不应出现在请求体里")
+	}
+}
+
+func TestAnthropicTruncatedByMaxTokens(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"content":[{"type":"text","text":"{\"summary\":\"cut"}],"stop_reason":"max_tokens"}`)
+	}))
+	defer srv.Close()
+
+	a := &Anthropic{BaseURL: srv.URL, APIKey: "k", HTTP: srv.Client()}
+	_, err := a.Complete(context.Background(), Request{Model: "m"})
+	if err == nil || !strings.Contains(err.Error(), "max_tokens") {
+		t.Fatalf("应返回明确的截断错误，got %v", err)
 	}
 }
 

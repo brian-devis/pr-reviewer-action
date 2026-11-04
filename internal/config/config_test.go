@@ -84,6 +84,15 @@ func TestLoadFormatDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadFormatIsCaseInsensitive(t *testing.T) {
+	setupEnv(t, `{"number":1}`)
+	t.Setenv("INPUT_API_FORMAT", " Anthropic ")
+	c, err := Load()
+	if err != nil || c.APIFormat != "anthropic" {
+		t.Fatalf("format=%q err=%v", c.APIFormat, err)
+	}
+}
+
 func TestLoadExplicitValuesOverrideDefaults(t *testing.T) {
 	setupEnv(t, `{"number":1}`)
 	t.Setenv("INPUT_API_FORMAT", "anthropic")

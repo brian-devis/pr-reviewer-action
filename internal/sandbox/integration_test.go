@@ -186,6 +186,13 @@ func TestID(t *testing.T) {
 `+testBody+`
 }
 `)
+	// 真实项目都会提交 go.sum；没有它，断网后 go 会（正确地）报 missing go.sum entry。
+	// 在宿主机上用 go mod tidy 生成，这是受信任的测试夹具，不经过沙盒。
+	tidy := exec.Command("go", "mod", "tidy")
+	tidy.Dir = dir
+	if out, err := tidy.CombinedOutput(); err != nil {
+		t.Skipf("无法在宿主机生成 go.sum（可能没有网络）: %v\n%s", err, out)
+	}
 	return dir
 }
 

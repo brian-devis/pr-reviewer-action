@@ -110,6 +110,33 @@ func TestCreateReviewOmitsEmptyCommit(t *testing.T) {
 	}
 }
 
+func TestCreateStatus(t *testing.T) {
+	c, reqs := newServer(t, func(*http.Request, string) (int, string) { return 201, `{}` })
+	long := "🔴" + strings.Repeat("长", 200)
+	if err := c.CreateStatus(context.Background(), "abc123", "failure", "ai-review", long); err != nil {
+		t.Fatal(err)
+	}
+	req := (*reqs)[0]
+	if req.method != http.MethodPost || req.path != "/repos/o/r/statuses/abc123" {
+		t.Fatalf("%s %s", req.method, req.path)
+	}
+	var p map[string]string
+	if err := json.Unmarshal([]byte(req.body), &p); err != nil {
+		t.Fatal(err)
+	}
+	if p["state"] != "failure" || p["context"] != "ai-review" {
+		t.Fatalf("payload 异常: %s", req.body)
+	}
+	if n := len([]rune(p["description"])); n != 140 {
+		t.Fatalf("描述应被截断到 140 个字符，实际 %d", n)
+	}
+	for _, r := range p["description"] {
+		if r > 0xFFFF {
+			t.Fatalf("4 字节 Unicode 应被过滤: %q", p["description"])
+		}
+	}
+}
+
 func TestListReviewComments(t *testing.T) {
 	c, _ := newServer(t, func(*http.Request, string) (int, string) {
 		return 200, `[{"path":"a.go","line":3,"body":"x"},{"path":"b.go","line":null,"body":"y"}]`

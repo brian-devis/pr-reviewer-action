@@ -18,6 +18,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  statuses: write
 
 jobs:
   review:
@@ -56,7 +57,18 @@ jobs:
 | `github_token` | `${{ github.token }}` | 需要 `pull-requests: write` |
 | `max_diff_bytes` | `60000` | 单次模型请求携带的 diff 上限，超出会分批；单个文件超出会被截断 |
 | `max_requests` | `5` | 单个 PR 最多发起的模型请求数，超出的文件不审查，并在总评里点名 |
+| `fail_on` | `never` | 达到该严重度时把 commit status 设为失败：`never` 只提示；`error` 有 🔴 就失败；`warning` 有 🔴 或 🟡 就失败 |
+| `status_context` | `ai-review` | commit status 的名称，设为必需检查时在分支保护里选它 |
 | `exclude_paths` | 空 | 额外排除的路径，逗号或换行分隔；`dir/` 表示目录，`*.md` 之类按 `path.Match` 匹配（不支持 `**`） |
+
+## 作为合并门禁
+
+审查结束后会给 PR 的最新提交设置一个名为 `ai-review` 的 commit status：运行中是 `pending`，完成后按 `fail_on` 判定为 `success` 或 `failure`，模型请求全部失败时是 `error`。需要在 workflow 里授予 `statuses: write`，没有权限时只会打印警告，不影响审查本身。
+
+- 统计的是**本次模型发现的全部问题**，包括因为之前已经评论过而没有重复发布的，所以状态反映的是“当前代码还有没有问题”。
+- 启用了 `fail_on` 但审查不完整（有模型请求失败、返回无法解析、或有文件因 `max_requests` 被跳过）时，状态是 `error`，不会在没审完的情况下显示通过。
+- 步骤本身的退出码不受 `fail_on` 影响，是否阻断合并由状态检查和分支保护决定。
+- 模型的判断有随机性，同一份代码两次运行可能结果不同。建议先用 `fail_on: never` 观察一段时间，再决定是否设为必需检查。
 
 ## 版本与分发
 

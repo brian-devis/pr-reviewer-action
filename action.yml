@@ -30,6 +30,14 @@ inputs:
     description: "单个 PR 最多发起的模型请求数，超出的文件不会被审查"
     required: false
     default: "5"
+  fail_on:
+    description: "达到该严重度时把 commit status 设为失败：never（默认，只提示）、error（有 error 级问题）、warning（有 error 或 warning 级问题）。需要 statuses: write 权限"
+    required: false
+    default: never
+  status_context:
+    description: "commit status 的名称，分支保护里选择它作为必需检查"
+    required: false
+    default: ai-review
   exclude_paths:
     description: "额外排除的路径，逗号或换行分隔，支持通配符；以 / 结尾表示目录"
     required: false
@@ -102,4 +110,6 @@ runs:
         INPUT_MAX_DIFF_BYTES: ${{ inputs.max_diff_bytes }}
         INPUT_MAX_REQUESTS: ${{ inputs.max_requests }}
         INPUT_EXCLUDE_PATHS: ${{ inputs.exclude_paths }}
+        INPUT_FAIL_ON: ${{ inputs.fail_on }}
+        INPUT_STATUS_CONTEXT: ${{ inputs.status_context }}
       run: '"$REVIEWER_BIN"'

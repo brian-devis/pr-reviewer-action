@@ -126,6 +126,24 @@ func (c *Client) ListReviewComments(ctx context.Context, pr int) ([]ExistingComm
 	return all, nil
 }
 
+// CreateStatus 给指定提交设置 commit status。GitHub 对描述有两个限制，否则返回 422：
+// 不超过 140 个字符，且不接受 4 字节 Unicode（如 emoji）。这里统一处理。
+// 同一 context 重复设置会覆盖之前的状态。
+func (c *Client) CreateStatus(ctx context.Context, sha, state, statusContext, description string) error {
+	description = strings.Map(func(r rune) rune {
+		if r > 0xFFFF {
+			return -1
+		}
+		return r
+	}, description)
+	if r := []rune(description); len(r) > 140 {
+		description = string(r[:139]) + "…"
+	}
+	_, err := c.do(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/statuses/%s", c.Repo, sha), acceptJSON,
+		map[string]string{"state": state, "context": statusContext, "description": description})
+	return err
+}
+
 // CreateReview 一次性提交一个包含多条行内评论的 review。commitSHA 可为空，
 // 为空时 GitHub 使用 PR 的最新提交。
 func (c *Client) CreateReview(ctx context.Context, pr int, commitSHA, body string, comments []ReviewComment) error {

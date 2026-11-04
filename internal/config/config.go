@@ -25,12 +25,18 @@ type Config struct {
 	Exclude      []string
 }
 
+// formatDefaults 是各 API 协议在用户没有填写 api_base_url / model 时的默认值。
+var formatDefaults = map[string]struct{ baseURL, model string }{
+	"openai":    {"https://api.openai.com/v1", "gpt-4.1"},
+	"anthropic": {"https://api.anthropic.com", "claude-sonnet-5-5"},
+}
+
 func Load() (*Config, error) {
 	c := &Config{
 		GitHubToken: os.Getenv("INPUT_GITHUB_TOKEN"),
 		APIKey:      os.Getenv("INPUT_API_KEY"),
-		APIBaseURL:  strings.TrimRight(envDefault("INPUT_API_BASE_URL", "https://api.openai.com/v1"), "/"),
-		Model:       envDefault("INPUT_MODEL", "gpt-4.1"),
+		APIBaseURL:  strings.TrimRight(strings.TrimSpace(os.Getenv("INPUT_API_BASE_URL")), "/"),
+		Model:       strings.TrimSpace(os.Getenv("INPUT_MODEL")),
 		APIFormat:   envDefault("INPUT_API_FORMAT", "openai"),
 		Repo:        os.Getenv("GITHUB_REPOSITORY"),
 		GitHubAPI:   strings.TrimRight(envDefault("GITHUB_API_URL", "https://api.github.com"), "/"),
@@ -39,8 +45,15 @@ func Load() (*Config, error) {
 	if c.GitHubToken == "" || c.APIKey == "" || c.Repo == "" {
 		return nil, errors.New("缺少 github_token、api_key 或 GITHUB_REPOSITORY")
 	}
-	if c.APIFormat != "openai" {
-		return nil, fmt.Errorf("不支持的 api_format %q，目前仅支持 openai", c.APIFormat)
+	d, ok := formatDefaults[c.APIFormat]
+	if !ok {
+		return nil, fmt.Errorf("不支持的 api_format %q，目前支持 openai、anthropic", c.APIFormat)
+	}
+	if c.APIBaseURL == "" {
+		c.APIBaseURL = d.baseURL
+	}
+	if c.Model == "" {
+		c.Model = d.model
 	}
 
 	var err error

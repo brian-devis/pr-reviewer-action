@@ -11,15 +11,15 @@ inputs:
     description: "模型服务 API Key"
     required: true
   api_base_url:
-    description: "模型服务地址（OpenAI 兼容协议）"
+    description: "模型服务地址；留空时按 api_format 使用默认值（openai: https://api.openai.com/v1，anthropic: https://api.anthropic.com）"
     required: false
-    default: https://api.openai.com/v1
+    default: ""
   model:
-    description: "模型标识"
+    description: "模型标识；留空时按 api_format 使用默认值（openai: gpt-4.1，anthropic: claude-sonnet-5-5）"
     required: false
-    default: gpt-4.1
+    default: ""
   api_format:
-    description: "API 协议格式，目前仅支持 openai"
+    description: "API 协议格式：openai（Chat Completions 兼容）或 anthropic（原生 Messages API）"
     required: false
     default: openai
   max_diff_bytes:

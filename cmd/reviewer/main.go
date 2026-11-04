@@ -40,11 +40,7 @@ func run() error {
 		Repo:  cfg.Repo,
 		HTTP:  &http.Client{Timeout: 2 * time.Minute},
 	}
-	provider := &llm.OpenAI{
-		BaseURL: cfg.APIBaseURL,
-		APIKey:  cfg.APIKey,
-		HTTP:    &http.Client{Timeout: 5 * time.Minute},
-	}
+	provider := newProvider(cfg, &http.Client{Timeout: 5 * time.Minute})
 
 	raw, err := gh.GetDiff(ctx, cfg.PRNumber)
 	if err != nil {
@@ -123,6 +119,14 @@ func run() error {
 	}
 	fmt.Printf("审查完成：%d 条行内评论，%d 条总评内问题\n", len(inline), len(orphans))
 	return nil
+}
+
+// newProvider 按 api_format 选择模型协议。config.Load 已经保证 format 合法。
+func newProvider(cfg *config.Config, client *http.Client) llm.Provider {
+	if cfg.APIFormat == "anthropic" {
+		return &llm.Anthropic{BaseURL: cfg.APIBaseURL, APIKey: cfg.APIKey, HTTP: client}
+	}
+	return &llm.OpenAI{BaseURL: cfg.APIBaseURL, APIKey: cfg.APIKey, HTTP: client}
 }
 
 // postInline 提交行内评论，已经存在的相同评论会被跳过。

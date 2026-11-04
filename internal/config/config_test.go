@@ -55,8 +55,44 @@ func TestLoadRejectsNonPREvent(t *testing.T) {
 
 func TestLoadRejectsUnknownFormat(t *testing.T) {
 	setupEnv(t, `{"number":1}`)
-	t.Setenv("INPUT_API_FORMAT", "anthropic")
+	t.Setenv("INPUT_API_FORMAT", "gemini")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected error for unsupported api_format")
+	}
+}
+
+func TestLoadFormatDefaults(t *testing.T) {
+	tests := []struct {
+		format, baseURL, model string
+	}{
+		{"openai", "https://api.openai.com/v1", "gpt-4.1"},
+		{"anthropic", "https://api.anthropic.com", "claude-sonnet-5-5"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.format, func(t *testing.T) {
+			setupEnv(t, `{"number":1}`)
+			t.Setenv("INPUT_API_FORMAT", tt.format)
+			t.Setenv("INPUT_API_BASE_URL", "")
+			c, err := Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.APIBaseURL != tt.baseURL || c.Model != tt.model {
+				t.Fatalf("base=%q model=%q", c.APIBaseURL, c.Model)
+			}
+		})
+	}
+}
+
+func TestLoadExplicitValuesOverrideDefaults(t *testing.T) {
+	setupEnv(t, `{"number":1}`)
+	t.Setenv("INPUT_API_FORMAT", "anthropic")
+	t.Setenv("INPUT_MODEL", "my-model")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.APIBaseURL != "https://example.com/v1" || c.Model != "my-model" {
+		t.Fatalf("base=%q model=%q", c.APIBaseURL, c.Model)
 	}
 }

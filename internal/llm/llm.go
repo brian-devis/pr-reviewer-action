@@ -69,7 +69,7 @@ func (o *OpenAI) call(ctx context.Context, req Request, jsonMode bool) (string, 
 		r.Header.Set("Authorization", "Bearer "+o.APIKey)
 		r.Header.Set("Content-Type", "application/json")
 		return r, nil
-	})
+	}, httpx.RetryUnsafe()) // 补全请求没有副作用，可以放心重发
 	if err != nil {
 		return "", err
 	}

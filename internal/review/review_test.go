@@ -21,7 +21,12 @@ func TestParse(t *testing.T) {
 		{"前后有多余文字", `好的：{"summary":"s","comments":[]} 以上`, true, 0, 0},
 		{"非 JSON", `这段代码看起来没问题`, false, 0, 0},
 		{"坏 JSON", `{"summary": `, false, 0, 0},
-		{"行号无效", `{"summary":"s","comments":[{"file":"a","line":"abc","message":"m"}]}`, false, 0, 0},
+		{"行号无效只影响该评论", `{"summary":"s","comments":[{"file":"a","line":"abc","message":"m"},{"file":"b","line":4,"message":"n"}]}`, true, 2, 0},
+		{"行号为 null", `{"summary":"s","comments":[{"file":"a","line":null,"message":"m"}]}`, true, 1, 0},
+		{"后面追加带花括号的说明", `{"summary":"s","comments":[]} 注意 {x} 的写法`, true, 0, 0},
+		{"多个对象取第一个", `{"summary":"first","comments":[{"file":"a","line":2,"message":"m"}]}{"summary":"second","comments":[]}`, true, 1, 2},
+		{"前面有带花括号的说明", `示例 {格式} 如下：{"summary":"s","comments":[{"file":"a","line":6,"message":"m"}]}`, true, 1, 6},
+		{"无关的 JSON 对象", `{"foo":1}`, false, 0, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -102,5 +107,29 @@ func TestPrompt(t *testing.T) {
 	sys, user := Prompt([]*diff.File{{Text: "### FILE: a.go\nL1 + x\n"}})
 	if !strings.Contains(sys, "JSON") || !strings.Contains(user, "<diff>") || !strings.Contains(user, "L1 + x") {
 		t.Fatalf("prompt 异常:\n%s\n%s", sys, user)
+	}
+}
+
+func TestValidateKeepsRealBDirectory(t *testing.T) {
+	files := map[string]*diff.File{
+		"b/foo.go": {Path: "b/foo.go", Lines: map[int]bool{1: true}},
+		"a.go":     {Path: "a.go", Lines: map[int]bool{1: true}},
+	}
+	inline, orphan := Validate([]Comment{
+		{File: "b/foo.go", Line: 1, Message: "真实的 b 目录"},
+		{File: "b/a.go", Line: 1, Message: "带了 diff 头部的 b/ 前缀"},
+	}, files)
+	if len(orphan) != 0 || len(inline) != 2 {
+		t.Fatalf("inline=%d orphan=%d, want 2/0", len(inline), len(orphan))
+	}
+	if inline[0].File != "b/foo.go" || inline[1].File != "a.go" {
+		t.Fatalf("路径归一化错误: %q %q", inline[0].File, inline[1].File)
+	}
+}
+
+func TestRenderOrphanWithoutLine(t *testing.T) {
+	got := Render(Report{Orphans: []Comment{{File: "x.go", Line: 0, Severity: "warning", Message: "m"}}, Model: "m"})
+	if !strings.Contains(got, "`x.go`") || strings.Contains(got, "x.go:0") {
+		t.Fatalf("行号为 0 时不应显示 :0:\n%s", got)
 	}
 }

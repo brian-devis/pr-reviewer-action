@@ -123,23 +123,11 @@ func postInline(ctx context.Context, gh *ghclient.Client, cfg *config.Config, in
 	if len(inline) == 0 {
 		return nil
 	}
-	seen := map[string]bool{}
 	existing, err := gh.ListReviewComments(ctx, cfg.PRNumber)
 	if err != nil {
 		fmt.Printf("::warning::读取已有行内评论失败，可能出现重复: %v\n", err)
 	}
-	for _, e := range existing {
-		seen[commentKey(e.Path, e.Line, e.Body)] = true
-	}
-
-	var fresh []ghclient.ReviewComment
-	for _, c := range inline {
-		body := review.RenderInline(c)
-		if seen[commentKey(c.File, int(c.Line), body)] {
-			continue
-		}
-		fresh = append(fresh, ghclient.ReviewComment{Path: c.File, Line: int(c.Line), Side: "RIGHT", Body: body})
-	}
+	fresh := filterFresh(inline, existing)
 	if len(fresh) == 0 {
 		return nil
 	}
@@ -147,6 +135,29 @@ func postInline(ctx context.Context, gh *ghclient.Client, cfg *config.Config, in
 		fmt.Sprintf("🤖 AI 行内审查：%d 条评论", len(fresh)), fresh)
 }
 
-func commentKey(path string, line int, body string) string {
-	return fmt.Sprintf("%s:%d:%s", path, line, body)
+// filterFresh 去掉那些位置上已经有机器人评论的行内评论，转成可提交的格式。
+// 模型每次运行的措辞都会变，所以按文件和行号去重，而不是比较正文。
+func filterFresh(inline []review.Comment, existing []ghclient.ExistingComment) []ghclient.ReviewComment {
+	taken := map[string]bool{}
+	for _, e := range existing {
+		if strings.Contains(e.Body, review.Marker) {
+			taken[locKey(e.Path, e.Line)] = true
+		}
+	}
+	var fresh []ghclient.ReviewComment
+	for _, c := range inline {
+		k := locKey(c.File, int(c.Line))
+		if taken[k] {
+			continue
+		}
+		taken[k] = true // 同一位置本次只发一条
+		fresh = append(fresh, ghclient.ReviewComment{
+			Path: c.File, Line: int(c.Line), Side: "RIGHT", Body: review.RenderInline(c),
+		})
+	}
+	return fresh
+}
+
+func locKey(path string, line int) string {
+	return fmt.Sprintf("%s:%d", path, line)
 }

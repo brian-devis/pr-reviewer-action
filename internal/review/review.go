@@ -46,9 +46,11 @@ type Line int
 func (l *Line) UnmarshalJSON(b []byte) error {
 	s := strings.Trim(strings.TrimSpace(string(b)), `"`)
 	s = strings.TrimPrefix(s, "L")
+	// 行号无法解析时记为 0，而不是报错：一条格式异常的评论不应该让整批输出作废。
+	// 0 不会出现在任何文件的可评论行里，这条评论会进入总评。
 	n, err := strconv.Atoi(s)
-	if err != nil {
-		return fmt.Errorf("无效行号 %s", b)
+	if err != nil || n < 0 {
+		n = 0
 	}
 	*l = Line(n)
 	return nil
@@ -67,18 +69,29 @@ type Result struct {
 	Comments []Comment `json:"comments"`
 }
 
-// Parse 从模型输出中提取 JSON，容忍外层的代码围栏和多余文字。
+// maxParseAttempts 限制在文本里寻找 JSON 起点的次数。
+const maxParseAttempts = 20
+
+// Parse 从模型输出中提取第一个合法的结果对象，容忍外层的代码围栏，
+// 以及前后多余的文字（包括带花括号的说明）。
 func Parse(text string) (Result, bool) {
-	s := strings.TrimSpace(text)
-	start, end := strings.Index(s, "{"), strings.LastIndex(s, "}")
-	if start < 0 || end < start {
-		return Result{}, false
+	s := text
+	offset := 0
+	for attempt := 0; attempt < maxParseAttempts; attempt++ {
+		i := strings.Index(s[offset:], "{")
+		if i < 0 {
+			break
+		}
+		start := offset + i
+		var r Result
+		// Decoder 只读第一个完整的 JSON 值，后面的内容会被忽略
+		err := json.NewDecoder(strings.NewReader(s[start:])).Decode(&r)
+		if err == nil && (r.Summary != "" || r.Comments != nil) {
+			return r, true
+		}
+		offset = start + 1
 	}
-	var r Result
-	if err := json.Unmarshal([]byte(s[start:end+1]), &r); err != nil {
-		return Result{}, false
-	}
-	return r, true
+	return Result{}, false
 }
 
 func normSeverity(s string) string {
@@ -92,6 +105,18 @@ func normSeverity(s string) string {
 	}
 }
 
+// normalizePath 去掉模型可能带上的 "./" 前缀；路径不在 diff 里时，再尝试去掉
+// diff 头部的 "b/" 前缀。已经匹配的路径保持原样，避免误伤真实存在的 b/ 目录。
+func normalizePath(p string, files map[string]*diff.File) string {
+	p = strings.TrimPrefix(strings.TrimSpace(p), "./")
+	if files[p] == nil {
+		if alt := strings.TrimPrefix(p, "b/"); files[alt] != nil {
+			return alt
+		}
+	}
+	return p
+}
+
 // Validate 把评论分成可以挂在 diff 行上的 inline 和只能进总评的 orphan。
 // 文件不在 diff 中、或行号不在可评论范围内的评论都会进入 orphan，
 // 这样一条坏评论不会让整个 review 提交失败。
@@ -99,7 +124,7 @@ func Validate(comments []Comment, files map[string]*diff.File) (inline, orphan [
 	seen := map[string]bool{}
 	for _, c := range comments {
 		c.Severity = normSeverity(c.Severity)
-		c.File = strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(c.File), "./"), "b/")
+		c.File = normalizePath(c.File, files)
 		c.Message = strings.TrimSpace(c.Message)
 		c.Suggestion = strings.TrimSpace(c.Suggestion)
 		if c.Message == "" {
@@ -176,7 +201,11 @@ func Render(r Report) string {
 		b.WriteString("\n### 其他发现（无法定位到具体行）\n\n")
 		for _, c := range r.Orphans {
 			msg := strings.ReplaceAll(c.Message, "\n", "\n  ")
-			fmt.Fprintf(&b, "- %s `%s:%d` %s\n", severityEmoji[c.Severity], c.File, c.Line, msg)
+			loc := c.File
+			if c.Line > 0 {
+				loc = fmt.Sprintf("%s:%d", c.File, c.Line)
+			}
+			fmt.Fprintf(&b, "- %s `%s` %s\n", severityEmoji[c.Severity], loc, msg)
 		}
 	}
 	for _, n := range r.Notes {

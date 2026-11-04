@@ -70,3 +70,60 @@ func TestDoGivesUpAfterMaxAttempts(t *testing.T) {
 		t.Fatalf("calls = %d, want %d", calls, maxAttempts)
 	}
 }
+
+func postReq(url string) func() (*http.Request, error) {
+	return func() (*http.Request, error) { return http.NewRequest(http.MethodPost, url, nil) }
+}
+
+func TestDoDoesNotRetryPostOnServerError(t *testing.T) {
+	baseDelay = time.Millisecond
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	if _, err := Do(context.Background(), srv.Client(), postReq(srv.URL)); err == nil {
+		t.Fatal("expected error")
+	}
+	if calls != 1 {
+		t.Fatalf("POST 遇到 5xx 不应重试，calls = %d", calls)
+	}
+}
+
+func TestDoRetriesPostOnRateLimit(t *testing.T) {
+	baseDelay = time.Millisecond
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) < 2 {
+			http.Error(w, "slow down", http.StatusTooManyRequests)
+			return
+		}
+		w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	data, err := Do(context.Background(), srv.Client(), postReq(srv.URL))
+	if err != nil || string(data) != "ok" || calls != 2 {
+		t.Fatalf("data=%q err=%v calls=%d", data, err, calls)
+	}
+}
+
+func TestDoRetryUnsafeRetriesPostOnServerError(t *testing.T) {
+	baseDelay = time.Millisecond
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) < 3 {
+			http.Error(w, "boom", http.StatusBadGateway)
+			return
+		}
+		w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	data, err := Do(context.Background(), srv.Client(), postReq(srv.URL), RetryUnsafe())
+	if err != nil || string(data) != "ok" || calls != 3 {
+		t.Fatalf("data=%q err=%v calls=%d", data, err, calls)
+	}
+}

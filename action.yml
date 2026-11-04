@@ -1,5 +1,5 @@
 name: PR AI Reviewer
-description: "使用自定义 OpenAI 兼容模型接口审查 Pull Request，并把结果发布到 PR 评论区"
+description: "使用自定义 OpenAI 兼容模型接口审查 Pull Request，发布行内评论和总评"
 author: brian-devis
 
 inputs:
@@ -23,20 +23,67 @@ inputs:
     required: false
     default: openai
   max_diff_bytes:
-    description: "发送给模型的 Diff 最大字节数，超出部分会被截断"
+    description: "单次模型请求携带的 diff 最大字节数，超出会分批或截断"
     required: false
     default: "60000"
+  max_requests:
+    description: "单个 PR 最多发起的模型请求数，超出的文件不会被审查"
+    required: false
+    default: "5"
+  exclude_paths:
+    description: "额外排除的路径，逗号或换行分隔，支持通配符；以 / 结尾表示目录"
+    required: false
+    default: ""
 
 runs:
   using: composite
   steps:
+    # 引用 @v1 或 @v1.2.3 时下载预编译二进制；引用分支（如 @main）或下载失败时从源码构建
+    - name: Download prebuilt binary
+      id: dl
+      shell: bash
+      env:
+        ACTION_REPO: ${{ github.action_repository }}
+        ACTION_REF: ${{ github.action_ref }}
+      run: |
+        set +e
+        case "$(uname -m)" in
+          x86_64) arch=amd64 ;;
+          aarch64|arm64) arch=arm64 ;;
+          *) arch="" ;;
+        esac
+        url=""
+        if [ -n "$ACTION_REPO" ] && [ -n "$arch" ] && [ "$(uname -s)" = "Linux" ]; then
+          case "$ACTION_REF" in
+            v[0-9]*.[0-9]*.[0-9]*) url="https://github.com/$ACTION_REPO/releases/download/$ACTION_REF/reviewer-linux-$arch" ;;
+            v[0-9]*) url="https://github.com/$ACTION_REPO/releases/latest/download/reviewer-linux-$arch" ;;
+          esac
+        fi
+        if [ -n "$url" ] && curl -fsSL --retry 3 -o "$RUNNER_TEMP/reviewer" "$url"; then
+          chmod +x "$RUNNER_TEMP/reviewer"
+          echo "REVIEWER_BIN=$RUNNER_TEMP/reviewer" >> "$GITHUB_ENV"
+          echo "downloaded=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "未使用预编译二进制，将从源码构建"
+          echo "downloaded=false" >> "$GITHUB_OUTPUT"
+        fi
+
     - uses: actions/setup-go@v5
+      if: steps.dl.outputs.downloaded != 'true'
       with:
         go-version: "1.22"
         cache: false
-    - name: Run reviewer
+
+    - name: Build from source
+      if: steps.dl.outputs.downloaded != 'true'
       shell: bash
       working-directory: ${{ github.action_path }}
+      run: |
+        go build -trimpath -o "$RUNNER_TEMP/reviewer" ./cmd/reviewer
+        echo "REVIEWER_BIN=$RUNNER_TEMP/reviewer" >> "$GITHUB_ENV"
+
+    - name: Run reviewer
+      shell: bash
       env:
         INPUT_GITHUB_TOKEN: ${{ inputs.github_token }}
         INPUT_API_KEY: ${{ inputs.api_key }}
@@ -44,4 +91,6 @@ runs:
         INPUT_MODEL: ${{ inputs.model }}
         INPUT_API_FORMAT: ${{ inputs.api_format }}
         INPUT_MAX_DIFF_BYTES: ${{ inputs.max_diff_bytes }}
-      run: go run ./cmd/reviewer
+        INPUT_MAX_REQUESTS: ${{ inputs.max_requests }}
+        INPUT_EXCLUDE_PATHS: ${{ inputs.exclude_paths }}
+      run: '"$REVIEWER_BIN"'

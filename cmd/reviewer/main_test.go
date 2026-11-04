@@ -3,13 +3,18 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/brian-devis/pr-reviewer-action/internal/config"
 	"github.com/brian-devis/pr-reviewer-action/internal/diff"
 	"github.com/brian-devis/pr-reviewer-action/internal/ghclient"
 	"github.com/brian-devis/pr-reviewer-action/internal/llm"
 	"github.com/brian-devis/pr-reviewer-action/internal/review"
+	"github.com/brian-devis/pr-reviewer-action/internal/sandbox"
 )
 
 // fakeProvider 按顺序返回预设的回复。
@@ -118,5 +123,129 @@ func TestFilterFreshLimitsPerLocation(t *testing.T) {
 	got := filterFresh(inline, nil)
 	if len(got) != maxBotPerLocation {
 		t.Fatalf("同一位置最多 %d 条，实际 %d", maxBotPerLocation, len(got))
+	}
+}
+
+// fakeSandbox 记录运行过的容器，并按步骤名返回预设的退出码。
+type fakeSandbox struct {
+	exit        map[string]int
+	oom         map[string]bool
+	unavailable error
+	specs       []sandbox.Spec
+}
+
+func (f *fakeSandbox) Available(context.Context) error { return f.unavailable }
+
+func (f *fakeSandbox) Run(_ context.Context, s sandbox.Spec) sandbox.Result {
+	f.specs = append(f.specs, s)
+	name := strings.Split(s.Name, "-")[1] // prr-<step>-<随机>
+	r := sandbox.Result{Name: name, ExitCode: f.exit[name], OOM: f.oom[name], Duration: time.Second}
+	if r.ExitCode != 0 {
+		r.Output = name + " failed output"
+	}
+	r.Status = sandbox.Classify(r)
+	return r
+}
+
+func sandboxConfig(t *testing.T, goProject bool) *config.Config {
+	dir := t.TempDir()
+	if goProject {
+		if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module x\n\ngo 1.22\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return &config.Config{
+		EnableSandbox: true, Workspace: dir, SandboxMemory: "1g", SandboxCPUs: "1", SandboxTimeout: time.Minute,
+	}
+}
+
+func TestRunSandboxPassed(t *testing.T) {
+	f := &fakeSandbox{}
+	sec, state, desc, err := runSandbox(context.Background(), sandboxConfig(t, true), f)
+	if err != nil || state != "success" || desc != "All sandbox checks passed" {
+		t.Fatalf("state=%s desc=%q err=%v", state, desc, err)
+	}
+	if sec.Network != "none" || sec.Image != "golang:1.22" || len(sec.Steps) != 2 {
+		t.Fatalf("section 异常: %+v", sec)
+	}
+}
+
+func TestRunSandboxTestFailureIsFailureNotError(t *testing.T) {
+	f := &fakeSandbox{exit: map[string]int{"test": 1}}
+	sec, state, desc, err := runSandbox(context.Background(), sandboxConfig(t, true), f)
+	if err != nil {
+		t.Fatalf("测试没通过不是沙盒错误: %v", err)
+	}
+	if state != "failure" || desc != "Sandbox checks failed" {
+		t.Fatalf("state=%s desc=%q", state, desc)
+	}
+	if len(sec.Steps) != 2 || sec.Steps[0].Status != review.StepFailed || sec.Steps[1].Status != review.StepPassed {
+		t.Fatalf("test 失败后 lint 仍应运行并通过: %+v", sec.Steps)
+	}
+	if !strings.Contains(sec.Steps[0].Output, "test failed output") {
+		t.Fatalf("失败输出应被带入总评: %+v", sec.Steps[0])
+	}
+}
+
+func TestRunSandboxOOMIsError(t *testing.T) {
+	f := &fakeSandbox{exit: map[string]int{"lint": 137}, oom: map[string]bool{"lint": true}}
+	_, state, desc, err := runSandbox(context.Background(), sandboxConfig(t, true), f)
+	if err != nil || state != "error" || desc != "Sandbox execution error" {
+		t.Fatalf("OOM 应为 error 状态: state=%s desc=%q err=%v", state, desc, err)
+	}
+}
+
+func TestRunSandboxDockerUnavailable(t *testing.T) {
+	f := &fakeSandbox{unavailable: errors.New("Docker 不可用")}
+	sec, state, _, err := runSandbox(context.Background(), sandboxConfig(t, true), f)
+	if err == nil || state != "error" {
+		t.Fatalf("Docker 不可用应返回 error: state=%s err=%v", state, err)
+	}
+	if len(f.specs) != 0 {
+		t.Fatal("Docker 不可用时不应尝试运行容器")
+	}
+	if len(sec.Steps) != 1 || sec.Steps[0].Status != review.StepError || !strings.Contains(sec.Steps[0].Detail, "Docker") {
+		t.Fatalf("总评里应说明具体错误: %+v", sec.Steps)
+	}
+}
+
+func TestRunSandboxNoCommandsConfigured(t *testing.T) {
+	// 既不是 Go 项目，也没有配置命令：必须报错，不能当作“通过”
+	_, state, _, err := runSandbox(context.Background(), sandboxConfig(t, false), &fakeSandbox{})
+	if !errors.Is(err, sandbox.ErrNoCommands) || state != "error" {
+		t.Fatalf("state=%s err=%v", state, err)
+	}
+}
+
+func TestRunSandboxNeverSeesSecrets(t *testing.T) {
+	cfg := sandboxConfig(t, true)
+	cfg.GitHubToken, cfg.APIKey = "ghs_SECRET", "sk-SECRET"
+	f := &fakeSandbox{}
+	if _, _, _, err := runSandbox(context.Background(), cfg, f); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range f.specs {
+		for _, arg := range sandbox.BuildArgs(s) {
+			if strings.Contains(arg, "SECRET") {
+				t.Fatalf("容器参数里出现了密钥: %q", arg)
+			}
+		}
+		if len(s.Env) != 0 {
+			t.Fatalf("不应向容器传递环境变量: %v", s.Env)
+		}
+	}
+}
+
+func TestToSectionMapsResults(t *testing.T) {
+	rep := sandbox.Report{Image: "i", Memory: "1g", CPUs: "1", Network: "none", Elapsed: time.Second, Results: []sandbox.Result{
+		{Name: "test", Status: sandbox.Failed, ExitCode: 2, Output: "out", Truncated: true, Duration: time.Second},
+	}}
+	s := toSection(rep)
+	if s.Image != "i" || len(s.Steps) != 1 {
+		t.Fatalf("%+v", s)
+	}
+	st := s.Steps[0]
+	if st.Name != "test" || st.Status != review.StepFailed || st.Detail != "退出码 2" || st.Output != "out" || !st.Truncated {
+		t.Fatalf("%+v", st)
 	}
 }

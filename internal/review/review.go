@@ -15,6 +15,21 @@ import (
 // Marker 是写进总评和行内评论里的隐藏标记，用于更新和去重。
 const Marker = "<!-- pr-ai-reviewer -->"
 
+// SandboxMarker 是只运行沙盒（没有 AI 评审）时总评使用的标记。
+// 沙盒和 AI 评审常常在各自独立的 job 里运行（沙盒 job 不配置任何密钥），
+// 如果共用一个标记，后跑完的会把先跑完的评论覆盖掉，所以各用各的。
+const SandboxMarker = "<!-- pr-sandbox-tests -->"
+
+// CommentMarker 返回这份报告对应的总评标记：
+//   - 有 AI 评审（无论是否同时有沙盒）：Marker；
+//   - 只有沙盒：SandboxMarker。
+func CommentMarker(r Report) string {
+	if r.NoAI {
+		return SandboxMarker
+	}
+	return Marker
+}
+
 const systemPrompt = `你是一名资深代码审查员，负责审查用户提供的 Pull Request 改动。
 你的输出必须是单个 JSON 对象，不要输出 JSON 以外的任何文字，格式如下：
 {"summary":"...","comments":[{"file":"路径","line":12,"severity":"error|warning|info","message":"...","suggestion":"..."}]}
@@ -179,13 +194,35 @@ type Report struct {
 	Orphans   []Comment // 无法定位到行，随总评展示
 	Notes     []string
 	Model     string
+
+	// NoAI 为 true 表示没有启用 AI 评审，总评里不出现 AI 相关的内容。
+	NoAI bool
+	// Sandbox 不为空时，总评里会增加沙盒测试一节。
+	Sandbox *Sandbox
 }
 
-// Render 渲染 PR 讨论区里的总评。
+// Render 渲染 PR 讨论区里的总评。AI 评审和沙盒测试是两个独立的部分，
+// 各自只在启用时出现，同一条评论里合并展示。
 func Render(r Report) string {
 	var b strings.Builder
-	b.WriteString(Marker + "\n## 🤖 AI Code Review\n\n")
+	title := "AI Code Review"
+	if r.NoAI || r.Sandbox != nil {
+		title = "PR Reviewer"
+	}
+	b.WriteString(CommentMarker(r) + "\n## 🤖 " + title + "\n\n")
+	if !r.NoAI {
+		renderAI(&b, r)
+	}
+	if r.Sandbox != nil {
+		renderSandbox(&b, *r.Sandbox)
+	}
+	if !r.NoAI {
+		fmt.Fprintf(&b, "\n<sub>model: %s</sub>", r.Model)
+	}
+	return b.String()
+}
 
+func renderAI(b *strings.Builder, r Report) {
 	var parts []string
 	for _, s := range r.Summaries {
 		if s = Sanitize(strings.TrimSpace(s)); s != "" {
@@ -204,10 +241,10 @@ func Render(r Report) string {
 	for _, c := range append(append([]Comment{}, r.Inline...), r.Orphans...) {
 		counts[c.Severity]++
 	}
-	fmt.Fprintf(&b, "**统计**：审查 %d 个文件 · 发现 %d 个问题（🔴 %d · 🟡 %d · 🔵 %d）\n",
+	fmt.Fprintf(b, "**统计**：审查 %d 个文件 · 发现 %d 个问题（🔴 %d · 🟡 %d · 🔵 %d）\n",
 		r.Files, total, counts["error"], counts["warning"], counts["info"])
 	if len(r.Inline) > 0 {
-		fmt.Fprintf(&b, "\n其中 %d 条已作为行内评论发布，见 Files changed。\n", len(r.Inline))
+		fmt.Fprintf(b, "\n其中 %d 条已作为行内评论发布，见 Files changed。\n", len(r.Inline))
 	}
 
 	if len(r.Orphans) > 0 {
@@ -218,12 +255,10 @@ func Render(r Report) string {
 			if c.Line > 0 {
 				loc = fmt.Sprintf("%s:%d", c.File, c.Line)
 			}
-			fmt.Fprintf(&b, "- %s `%s` %s\n", severityEmoji[c.Severity], loc, msg)
+			fmt.Fprintf(b, "- %s `%s` %s\n", severityEmoji[c.Severity], loc, msg)
 		}
 	}
 	for _, n := range r.Notes {
-		fmt.Fprintf(&b, "\n> ⚠️ %s\n", n)
+		fmt.Fprintf(b, "\n> ⚠️ %s\n", n)
 	}
-	fmt.Fprintf(&b, "\n<sub>model: %s</sub>", r.Model)
-	return b.String()
 }

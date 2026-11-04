@@ -1,15 +1,56 @@
 name: PR AI Reviewer
-description: "使用自定义 OpenAI 兼容模型接口审查 Pull Request，发布行内评论和总评"
+description: "AI 审查 Pull Request（行内评论 + 总评），并可在断网的 Docker 沙盒里运行测试和 Lint；两个功能相互独立"
 author: brian-devis
 
 inputs:
   github_token:
-    description: "GitHub Token，需要 pull-requests: write 权限"
+    description: "GitHub Token，需要 pull-requests: write 权限；发布 commit status 还需要 statuses: write"
     required: true
     default: ${{ github.token }}
+  enable_ai_review:
+    description: "是否启用 AI 评审。设为 false 时不会初始化模型，也不要求 api_key、api_base_url、model"
+    required: false
+    default: "true"
+  enable_sandbox:
+    description: "是否启用沙盒测试：在断网、限制资源的 Docker 容器里运行测试和 Lint。需要先 actions/checkout"
+    required: false
+    default: "false"
   api_key:
-    description: "模型服务 API Key"
-    required: true
+    description: "模型服务 API Key；启用 AI 评审时必填，仅运行沙盒时不需要"
+    required: false
+    default: ""
+  sandbox_image:
+    description: "沙盒使用的镜像，如 golang:1.25；留空时 Go 项目按 go.mod 选择 golang 镜像"
+    required: false
+    default: ""
+  sandbox_test_command:
+    description: "沙盒里运行的测试命令；Go 项目留空时默认 go test ./..."
+    required: false
+    default: ""
+  sandbox_lint_command:
+    description: "沙盒里运行的 Lint 命令；Go 项目留空时默认 go vet ./..."
+    required: false
+    default: ""
+  sandbox_memory:
+    description: "每个沙盒容器的内存上限，如 512m、1g"
+    required: false
+    default: "1g"
+  sandbox_cpus:
+    description: "每个沙盒容器的 CPU 上限，如 1、0.5"
+    required: false
+    default: "1"
+  sandbox_timeout:
+    description: "每个沙盒步骤的超时时间，如 90s、5m，最长 1h"
+    required: false
+    default: "5m"
+  sandbox_network:
+    description: "沙盒网络模式，目前只支持 none（断网）"
+    required: false
+    default: none
+  sandbox_status_context:
+    description: "沙盒的 commit status 名称"
+    required: false
+    default: sandbox-tests
   api_base_url:
     description: "模型服务地址；留空时按 api_format 使用默认值（openai: https://api.openai.com/v1，anthropic: https://api.anthropic.com）"
     required: false
@@ -112,4 +153,14 @@ runs:
         INPUT_EXCLUDE_PATHS: ${{ inputs.exclude_paths }}
         INPUT_FAIL_ON: ${{ inputs.fail_on }}
         INPUT_STATUS_CONTEXT: ${{ inputs.status_context }}
+        INPUT_ENABLE_AI_REVIEW: ${{ inputs.enable_ai_review }}
+        INPUT_ENABLE_SANDBOX: ${{ inputs.enable_sandbox }}
+        INPUT_SANDBOX_IMAGE: ${{ inputs.sandbox_image }}
+        INPUT_SANDBOX_TEST_COMMAND: ${{ inputs.sandbox_test_command }}
+        INPUT_SANDBOX_LINT_COMMAND: ${{ inputs.sandbox_lint_command }}
+        INPUT_SANDBOX_MEMORY: ${{ inputs.sandbox_memory }}
+        INPUT_SANDBOX_CPUS: ${{ inputs.sandbox_cpus }}
+        INPUT_SANDBOX_TIMEOUT: ${{ inputs.sandbox_timeout }}
+        INPUT_SANDBOX_NETWORK: ${{ inputs.sandbox_network }}
+        INPUT_SANDBOX_STATUS_CONTEXT: ${{ inputs.sandbox_status_context }}
       run: '"$REVIEWER_BIN"'

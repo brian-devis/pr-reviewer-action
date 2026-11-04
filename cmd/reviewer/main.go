@@ -14,6 +14,7 @@ import (
 	"github.com/brian-devis/pr-reviewer-action/internal/ghclient"
 	"github.com/brian-devis/pr-reviewer-action/internal/llm"
 	"github.com/brian-devis/pr-reviewer-action/internal/review"
+	"github.com/brian-devis/pr-reviewer-action/internal/sandbox"
 )
 
 func main() {
@@ -28,10 +29,21 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	// 防止密钥出现在后续日志里
-	fmt.Printf("::add-mask::%s\n", cfg.APIKey)
+	// AI 评审和沙盒测试是两个独立的功能，都关闭时什么都不做，也不会访问任何外部服务
+	if !cfg.EnableAI && !cfg.EnableSandbox {
+		fmt.Println("enable_ai_review 和 enable_sandbox 都已关闭，跳过")
+		return nil
+	}
+	if cfg.EnableAI {
+		// 防止密钥出现在后续日志里
+		fmt.Printf("::add-mask::%s\n", cfg.APIKey)
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	timeout := 20 * time.Minute
+	if cfg.EnableSandbox {
+		timeout += 3 * cfg.SandboxTimeout // 准备依赖、test、lint 各自最多一个超时时长
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	gh := &ghclient.Client{
@@ -40,40 +52,87 @@ func run() error {
 		Repo:  cfg.Repo,
 		HTTP:  &http.Client{Timeout: 2 * time.Minute},
 	}
-	provider := newProvider(cfg, &http.Client{Timeout: 5 * time.Minute})
 
-	// 状态检查失败（例如 workflow 没有 statuses: write 权限）不应该让审查本身失败
-	setStatus := func(state, desc string) {
+	// 状态检查失败（例如 workflow 没有 statuses: write 权限）不应该让检查本身失败。
+	// 状态写到 PR 的 head 提交，而不是 pull_request 事件默认检出的合并提交。
+	setStatus := func(statusContext, state, desc string) {
 		if cfg.HeadSHA == "" {
 			return
 		}
-		if err := gh.CreateStatus(ctx, cfg.HeadSHA, state, cfg.StatusContext, desc); err != nil {
-			fmt.Printf("::warning::设置 commit status 失败（需要 statuses: write 权限）: %v\n", err)
+		if err := gh.CreateStatus(ctx, cfg.HeadSHA, state, statusContext, desc, cfg.RunURL); err != nil {
+			fmt.Printf("::warning::设置 commit status %q 失败（请确认 workflow 有 statuses: write 权限）: %v\n", statusContext, err)
 		}
 	}
-	setStatus(review.StatePending, "AI 审查进行中")
-
-	state, desc, err := execute(ctx, cfg, gh, provider)
-	if err != nil {
-		// 错误详情可能包含接口返回内容，不写进公开的状态描述里
-		setStatus(review.StateError, "审查出错，详见 Actions 日志")
-		return err
+	if cfg.EnableSandbox {
+		setStatus(cfg.SandboxStatusContext, review.StatePending, "Sandbox checks running")
 	}
-	setStatus(state, desc)
-	fmt.Printf("commit status: %s（%s）\n", state, desc)
-	return nil
+	if cfg.EnableAI {
+		setStatus(cfg.StatusContext, review.StatePending, "AI 审查进行中")
+	}
+
+	var runErr error
+
+	// 沙盒先跑，结果出来就立刻写状态，不必等较慢的 AI 评审
+	var sandboxSection *review.Sandbox
+	if cfg.EnableSandbox {
+		section, state, desc, err := runSandbox(ctx, cfg, sandbox.Docker{})
+		sandboxSection = &section
+		if err != nil {
+			fmt.Printf("::error::沙盒检查出错: %v\n", err)
+			runErr = err
+		}
+		setStatus(cfg.SandboxStatusContext, state, desc)
+		fmt.Printf("commit status %s: %s（%s）\n", cfg.SandboxStatusContext, state, desc)
+	}
+
+	var ai aiResult
+	if cfg.EnableAI {
+		provider := newProvider(cfg, &http.Client{Timeout: 5 * time.Minute})
+		var err error
+		if ai, err = execute(ctx, cfg, gh, provider); err != nil {
+			// 错误详情可能包含接口返回内容，不写进公开的状态描述里
+			setStatus(cfg.StatusContext, review.StateError, "审查出错，详见 Actions 日志")
+			fmt.Printf("::error::AI 评审出错: %v\n", err)
+			runErr = errors.Join(runErr, err)
+		} else {
+			setStatus(cfg.StatusContext, ai.state, ai.desc)
+			fmt.Printf("commit status %s: %s（%s）\n", cfg.StatusContext, ai.state, ai.desc)
+		}
+	}
+
+	// 同一次运行里两部分都有结果时合并成一条总评。AI 没有产出内容（关闭、出错或没有
+	// 可审查的文件）时，总评里只保留沙盒一节，不出现“未发现问题”之类的误导内容，
+	// 并使用沙盒自己的标记，这样分在不同 job 里运行时两条评论互不覆盖。
+	if ai.reviewed || sandboxSection != nil {
+		rep := ai.report
+		rep.NoAI = !ai.reviewed
+		rep.Sandbox = sandboxSection
+		if err := gh.UpsertComment(ctx, cfg.PRNumber, review.CommentMarker(rep), review.Render(rep)); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("发布评论失败: %w", err))
+		}
+	}
+	return runErr
 }
 
-// execute 完成一次审查，返回应当设置的 commit status。
-func execute(ctx context.Context, cfg *config.Config, gh *ghclient.Client, provider llm.Provider) (state, desc string, err error) {
+// aiResult 是一次 AI 评审的产出：要展示的报告，以及应当设置的 commit status。
+type aiResult struct {
+	report review.Report
+	state  string
+	desc   string
+	// reviewed 为 false 表示没有实际审查任何文件，总评里不展示 AI 部分。
+	reviewed bool
+}
+
+// execute 完成一次 AI 评审。行内评论在这里发布，总评由调用方合并后统一发布。
+func execute(ctx context.Context, cfg *config.Config, gh *ghclient.Client, provider llm.Provider) (aiResult, error) {
 	raw, err := gh.GetDiff(ctx, cfg.PRNumber)
 	if err != nil {
-		return "", "", fmt.Errorf("获取 diff 失败: %w", err)
+		return aiResult{}, fmt.Errorf("获取 diff 失败: %w", err)
 	}
 	files := diff.Select(diff.Parse(raw), cfg.Exclude)
 	if len(files) == 0 {
 		fmt.Println("没有需要审查的文件，跳过")
-		return review.StateSuccess, "没有需要审查的文件", nil
+		return aiResult{state: review.StateSuccess, desc: "没有需要审查的文件"}, nil
 	}
 	byPath := make(map[string]*diff.File, len(files))
 	for _, f := range files {
@@ -103,7 +162,7 @@ func execute(ctx context.Context, cfg *config.Config, gh *ghclient.Client, provi
 		all = append(all, res.Comments...)
 	}
 	if failures == len(chunks) {
-		return "", "", errors.New("所有模型请求均失败")
+		return aiResult{}, errors.New("所有模型请求均失败")
 	}
 
 	for _, f := range files {
@@ -140,15 +199,11 @@ func execute(ctx context.Context, cfg *config.Config, gh *ghclient.Client, provi
 		report.Notes = append(report.Notes, "行内评论提交失败，相关问题已列在上方。")
 	}
 	report.Inline, report.Orphans = inline, orphans
-
-	if err := gh.UpsertComment(ctx, cfg.PRNumber, review.Marker, review.Render(report)); err != nil {
-		return "", "", fmt.Errorf("发布评论失败: %w", err)
-	}
 	fmt.Printf("审查完成：%d 条行内评论，%d 条总评内问题\n", len(inline), len(orphans))
 
 	incomplete := failures > 0 || unparsed > 0 || len(skipped) > 0
-	state, desc = review.Decide(counts, cfg.FailOn, incomplete)
-	return state, desc, nil
+	state, desc := review.Decide(counts, cfg.FailOn, incomplete)
+	return aiResult{report: report, state: state, desc: desc, reviewed: true}, nil
 }
 
 // maxParseAttempts 是模型返回无法解析的 JSON 时，同一批文件最多请求的次数。

@@ -1,4 +1,4 @@
-name: AI PR Review
+name: PR Review
 
 on:
   pull_request:
@@ -10,8 +10,8 @@ permissions:
   statuses: write
 
 jobs:
-  review:
-    # fork 的 PR 拿不到 secrets，跳过
+  # AI 评审：需要模型密钥，fork 的 PR 拿不到 secrets，所以跳过
+  ai-review:
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
@@ -19,8 +19,27 @@ jobs:
       - uses: ./
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          enable_ai_review: "true"
           api_key: ${{ secrets.LLM_API_KEY }}
           fail_on: ${{ vars.LLM_FAIL_ON || 'never' }}
           api_format: ${{ vars.LLM_API_FORMAT || 'openai' }}
           api_base_url: ${{ vars.LLM_API_BASE_URL || 'https://api.openai.com/v1' }}
           model: ${{ vars.LLM_MODEL || 'gpt-4.1' }}
+
+  # 沙盒测试：不配置任何模型密钥，独立于 AI 评审运行
+  sandbox:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 不让 checkout 把 GitHub Token 留在 .git/config 里
+          persist-credentials: false
+          # 检出 PR 的 head，而不是 pull_request 默认的合并提交
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: ./
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          enable_ai_review: "false"
+          enable_sandbox: "true"
+          sandbox_test_command: go test ./...
+          sandbox_lint_command: go vet ./...

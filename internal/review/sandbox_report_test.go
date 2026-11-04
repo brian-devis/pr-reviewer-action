@@ -18,7 +18,7 @@ func passedSandbox() *Sandbox {
 
 func TestRenderSandboxOnlyHasNoAIContent(t *testing.T) {
 	got := Render(Report{NoAI: true, Sandbox: passedSandbox()})
-	for _, want := range []string{Marker, "PR Reviewer", "沙盒检查通过", "单元测试", "Lint", "golang:1.22", "1g", "网络 已禁用", "12.4s"} {
+	for _, want := range []string{SandboxMarker, "PR Reviewer", "沙盒检查通过", "单元测试", "Lint", "golang:1.22", "1g", "网络 已禁用", "12.4s"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("缺少 %q:\n%s", want, got)
 		}
@@ -56,7 +56,7 @@ func TestRenderSandboxFailureShowsSanitizedOutput(t *testing.T) {
 	s := passedSandbox()
 	s.Steps[0] = SandboxStep{
 		Name: "test", Status: StepFailed, Detail: "退出码 1", Duration: time.Second,
-		Output: "--- FAIL: TestX\n\x1b[31mred\x1b[0m cc @victim <!-- hidden --> " + Marker + "\n```\nbreak out\n",
+		Output: "--- FAIL: TestX\n\x1b[31mred\x1b[0m cc @victim <!-- hidden --> " + SandboxMarker + Marker + "\n```\nbreak out\n",
 	}
 	got := Render(Report{NoAI: true, Sandbox: s})
 	if !strings.Contains(got, "沙盒检查未通过") || !strings.Contains(got, "<details>") || !strings.Contains(got, "--- FAIL: TestX") {
@@ -65,7 +65,7 @@ func TestRenderSandboxFailureShowsSanitizedOutput(t *testing.T) {
 	if strings.Contains(got, "\x1b") || strings.Contains(got, "@victim") || strings.Contains(got, "<!-- hidden") {
 		t.Fatalf("输出里的颜色码、提及、HTML 注释应被清理:\n%s", got)
 	}
-	if strings.Count(got, Marker) != 1 {
+	if strings.Count(got, SandboxMarker) != 1 || strings.Contains(got, Marker) {
 		t.Fatalf("输出里伪造的标记应被删除:\n%s", got)
 	}
 	if !strings.Contains(got, "````") {
@@ -117,5 +117,33 @@ func TestRenderSandboxEscapesTableCells(t *testing.T) {
 	got := Render(Report{NoAI: true, Sandbox: s})
 	if !strings.Contains(got, `a \| b c`) {
 		t.Fatalf("表格单元格应转义竖线并去掉换行:\n%s", got)
+	}
+}
+
+func TestCommentMarkerSeparatesIndependentJobs(t *testing.T) {
+	sandboxOnly := Render(Report{NoAI: true, Sandbox: passedSandbox()})
+	aiOnly := Render(Report{Summaries: []string{"ok"}, Files: 1, Model: "m"})
+	both := Render(Report{Summaries: []string{"ok"}, Files: 1, Model: "m", Sandbox: passedSandbox()})
+
+	if !strings.Contains(sandboxOnly, SandboxMarker) || strings.Contains(sandboxOnly, Marker) {
+		t.Fatalf("只开沙盒应只带沙盒标记:\n%s", sandboxOnly)
+	}
+	if !strings.Contains(aiOnly, Marker) || strings.Contains(aiOnly, SandboxMarker) {
+		t.Fatalf("只开 AI 应只带 AI 标记:\n%s", aiOnly)
+	}
+	// UpsertComment 用 strings.Contains 查找已有评论：两个独立 job 的评论不能互相匹配
+	if strings.Contains(sandboxOnly, Marker) || strings.Contains(aiOnly, SandboxMarker) {
+		t.Fatal("两个独立 job 的评论会互相覆盖")
+	}
+	// 合并展示时用 AI 的标记，并且同一条评论里不会出现两个标记
+	if !strings.Contains(both, Marker) || strings.Contains(both, SandboxMarker) {
+		t.Fatalf("两部分合并时只应带 AI 标记:\n%s", both)
+	}
+}
+
+func TestSanitizeRemovesBothMarkers(t *testing.T) {
+	got := Sanitize("a" + Marker + "b" + SandboxMarker + "c")
+	if got != "abc" {
+		t.Fatalf("got %q", got)
 	}
 }

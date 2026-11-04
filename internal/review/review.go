@@ -15,6 +15,21 @@ import (
 // Marker 是写进总评和行内评论里的隐藏标记，用于更新和去重。
 const Marker = "<!-- pr-ai-reviewer -->"
 
+// SandboxMarker 是只运行沙盒（没有 AI 评审）时总评使用的标记。
+// 沙盒和 AI 评审常常在各自独立的 job 里运行（沙盒 job 不配置任何密钥），
+// 如果共用一个标记，后跑完的会把先跑完的评论覆盖掉，所以各用各的。
+const SandboxMarker = "<!-- pr-sandbox-tests -->"
+
+// CommentMarker 返回这份报告对应的总评标记：
+//   - 有 AI 评审（无论是否同时有沙盒）：Marker；
+//   - 只有沙盒：SandboxMarker。
+func CommentMarker(r Report) string {
+	if r.NoAI {
+		return SandboxMarker
+	}
+	return Marker
+}
+
 const systemPrompt = `你是一名资深代码审查员，负责审查用户提供的 Pull Request 改动。
 你的输出必须是单个 JSON 对象，不要输出 JSON 以外的任何文字，格式如下：
 {"summary":"...","comments":[{"file":"路径","line":12,"severity":"error|warning|info","message":"...","suggestion":"..."}]}
@@ -194,7 +209,7 @@ func Render(r Report) string {
 	if r.NoAI || r.Sandbox != nil {
 		title = "PR Reviewer"
 	}
-	b.WriteString(Marker + "\n## 🤖 " + title + "\n\n")
+	b.WriteString(CommentMarker(r) + "\n## 🤖 " + title + "\n\n")
 	if !r.NoAI {
 		renderAI(&b, r)
 	}

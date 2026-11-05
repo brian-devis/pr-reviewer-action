@@ -228,8 +228,29 @@ func TestSandboxDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	if c.SandboxMemory != "1g" || c.SandboxCPUs != "1" || c.SandboxTimeout != 5*time.Minute ||
-		c.SandboxStatusContext != "sandbox-tests" {
+		c.SandboxStatusContext != "sandbox-tests" || c.SandboxLanguage != "auto" {
 		t.Fatalf("默认值错误: %+v", c)
+	}
+}
+
+func TestSandboxLanguageAndInstallCommand(t *testing.T) {
+	sandboxOnly(t)
+	t.Setenv("INPUT_SANDBOX_LANGUAGE", " Python ")
+	t.Setenv("INPUT_SANDBOX_INSTALL_COMMAND", " pip install -r requirements.txt ")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.SandboxLanguage != "python" || c.SandboxInstallCmd != "pip install -r requirements.txt" {
+		t.Fatalf("%+v", c)
+	}
+}
+
+func TestSandboxRejectsUnknownLanguage(t *testing.T) {
+	sandboxOnly(t)
+	t.Setenv("INPUT_SANDBOX_LANGUAGE", "ruby")
+	if _, err := Load(); err == nil {
+		t.Fatal("不支持的 sandbox_language 应被拒绝")
 	}
 }
 

@@ -34,18 +34,21 @@ func runSandbox(ctx context.Context, cfg *config.Config, r sandbox.Runner) (revi
 		}
 	}
 	opts, err := sandbox.Resolve(sandbox.Options{
-		Image:   cfg.SandboxImage,
-		TestCmd: cfg.SandboxTestCmd,
-		LintCmd: cfg.SandboxLintCmd,
-		Memory:  cfg.SandboxMemory,
-		CPUs:    cfg.SandboxCPUs,
-		Timeout: cfg.SandboxTimeout,
-		Source:  cfg.Workspace,
+		Image:      cfg.SandboxImage,
+		TestCmd:    cfg.SandboxTestCmd,
+		LintCmd:    cfg.SandboxLintCmd,
+		InstallCmd: cfg.SandboxInstallCmd,
+		Memory:     cfg.SandboxMemory,
+		CPUs:       cfg.SandboxCPUs,
+		Timeout:    cfg.SandboxTimeout,
+		Source:     cfg.Workspace,
+		Project:    sandbox.Kind(cfg.SandboxLanguage),
 	})
 	if err != nil {
 		return fail(err)
 	}
 	section.Image = opts.Image
+	section.Kind = string(opts.Project)
 
 	rep, err := sandbox.Run(ctx, r, opts)
 	if err != nil {

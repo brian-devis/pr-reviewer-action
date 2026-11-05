@@ -14,6 +14,7 @@ import (
 // Spec 描述一次容器运行。
 type Spec struct {
 	Name    string // 容器名，用于清理和查询 OOM 状态
+	Kind    Kind   // 项目类型，决定要不要注入 Go 专用的环境变量
 	Image   string
 	Command string // 交给 sh -c 执行
 	Memory  string // 如 1g
@@ -23,10 +24,13 @@ type Spec struct {
 	Network string
 	// WorkDir 是宿主机上的工作副本，挂载到容器的 /work。
 	WorkDir string
-	// ModCache 是宿主机上的 Go 模块缓存目录，挂载到容器的 /gomod。为空则不挂载。
-	ModCache string
-	// ModCacheWritable 只在联网准备依赖的阶段为 true，之后的运行都是只读。
-	ModCacheWritable bool
+	// CacheDir 是宿主机上的依赖缓存目录，挂载到容器的 CacheTarget。为空则不挂载。
+	// Go 是模块缓存（/gomod），Python 是 pip --target 目录（/deps）；
+	// Node 的 node_modules 在工作副本里，不需要额外挂载。
+	CacheDir    string
+	CacheTarget string
+	// CacheWritable 只在联网准备依赖的阶段为 true，之后的运行都是只读。
+	CacheWritable bool
 	// Env 是显式传入的环境变量。容器不会继承宿主机环境，只有这里列出的才可见。
 	Env map[string]string
 }
@@ -58,22 +62,52 @@ func BuildArgs(s Spec) []string {
 		"--workdir", "/work",
 		"--mount", "type=bind,source=" + s.WorkDir + ",target=/work",
 		"--env", "HOME=/tmp",
-		"--env", "GOCACHE=/tmp/gocache",
-		"--env", "GOPATH=/tmp/gopath", // 根文件系统只读；go 会把校验库缓存写到 GOPATH 下
-		"--env", "GOTMPDIR=/tmp",
 		"--env", "CGO_ENABLED=0",
-		"--env", "GOTOOLCHAIN=local", // 不让 go 命令在运行时下载别的工具链
 	}
-	if s.ModCache != "" {
-		mount := "type=bind,source=" + s.ModCache + ",target=/gomod"
-		if !s.ModCacheWritable {
+	// Go 专用的缓存和离线开关只对 Go 项目注入，其他语言不需要也不该看到 GOPATH 之类的变量
+	if s.Kind == KindGo {
+		goOffline := s.Network == "none"
+		args = append(args,
+			"--env", "GOCACHE=/tmp/gocache",
+			"--env", "GOPATH=/tmp/gopath", // 根文件系统只读；go 会把校验库缓存写到 GOPATH 下
+			"--env", "GOTMPDIR=/tmp",
+			"--env", "GOTOOLCHAIN=local", // 不让 go 命令在运行时下载别的工具链
+		)
+		if goOffline {
+			// 断网后任何联网的 go 命令都应该立刻失败，而不是卡到超时
+			args = append(args, "--env", "GOFLAGS=-mod=readonly", "--env", "GOPROXY=off")
+		}
+	}
+	if s.CacheDir != "" && s.CacheTarget != "" {
+		mount := "type=bind,source=" + s.CacheDir + ",target=" + s.CacheTarget
+		if !s.CacheWritable {
 			mount += ",readonly"
 		}
-		args = append(args, "--mount", mount, "--env", "GOMODCACHE=/gomod")
+		args = append(args, "--mount", mount)
+	} else if s.Kind == KindGo {
+		// 兼容没有配置缓存的 Go 运行（如测试里的单独 Spec）
+		args = append(args, "--env", "GOMODCACHE=/tmp/gomod")
 	}
-	if s.Network == "none" {
-		// 断网后任何联网的 go 命令都应该立刻失败，而不是卡到超时
-		args = append(args, "--env", "GOFLAGS=-mod=readonly", "--env", "GOPROXY=off")
+	if s.Network == "none" && s.Kind == KindPython {
+		// 断网后不要尝试访问 PyPI，直接失败
+		args = append(args, "--env", "PIP_NO_INDEX=1")
+	}
+	switch s.Kind {
+	case KindNode:
+		args = append(args,
+			"--env", "npm_config_cache=/tmp/npm-cache",
+			"--env", "npm_config_update_notifier=false",
+			"--env", "CI=true",
+		)
+		if s.Network == "none" {
+			args = append(args, "--env", "npm_config_offline=true")
+		}
+	case KindPython:
+		args = append(args,
+			"--env", "PYTHONUNBUFFERED=1",
+			"--env", "PYTHONDONTWRITEBYTECODE=1", // 根文件系统只读，不能写 __pycache__
+			"--env", "PYTHONPATH="+s.CacheTarget,
+		)
 	}
 	for _, k := range sortedKeys(s.Env) {
 		args = append(args, "--env", k+"="+s.Env[k])

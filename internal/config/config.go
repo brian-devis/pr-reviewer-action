@@ -40,9 +40,11 @@ type Config struct {
 
 	// 沙盒测试
 	Workspace            string // 仓库检出目录（GITHUB_WORKSPACE）
+	SandboxLanguage      string // auto | go | node | python
 	SandboxImage         string
 	SandboxTestCmd       string
 	SandboxLintCmd       string
+	SandboxInstallCmd    string
 	SandboxMemory        string
 	SandboxCPUs          string
 	SandboxTimeout       time.Duration
@@ -138,14 +140,21 @@ func (c *Config) loadAI() error {
 
 // loadSandbox 读取并校验沙盒测试的配置。只有 enable_sandbox 打开时才会调用。
 func (c *Config) loadSandbox() error {
+	c.SandboxLanguage = strings.ToLower(envDefault("INPUT_SANDBOX_LANGUAGE", "auto"))
 	c.SandboxImage = strings.TrimSpace(os.Getenv("INPUT_SANDBOX_IMAGE"))
 	c.SandboxTestCmd = strings.TrimSpace(os.Getenv("INPUT_SANDBOX_TEST_COMMAND"))
 	c.SandboxLintCmd = strings.TrimSpace(os.Getenv("INPUT_SANDBOX_LINT_COMMAND"))
+	c.SandboxInstallCmd = strings.TrimSpace(os.Getenv("INPUT_SANDBOX_INSTALL_COMMAND"))
 	c.SandboxMemory = strings.ToLower(envDefault("INPUT_SANDBOX_MEMORY", "1g"))
 	c.SandboxStatusContext = envDefault("INPUT_SANDBOX_STATUS_CONTEXT", "sandbox-tests")
 
 	if c.Workspace == "" {
 		return errors.New("缺少 GITHUB_WORKSPACE：沙盒需要代码，请先使用 actions/checkout")
+	}
+	switch c.SandboxLanguage {
+	case "auto", "go", "node", "python":
+	default:
+		return fmt.Errorf("sandbox_language 取值无效 %q，可选 auto、go、node、python", c.SandboxLanguage)
 	}
 	if c.SandboxImage != "" && !imageRe.MatchString(c.SandboxImage) {
 		return fmt.Errorf("sandbox_image 取值无效 %q", c.SandboxImage)

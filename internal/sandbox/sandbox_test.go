@@ -130,6 +130,31 @@ func TestBuildArgsCacheMount(t *testing.T) {
 	}
 }
 
+func TestBuildArgsGoModCacheEnvMatchesMount(t *testing.T) {
+	// 只挂载 /gomod 而不设置 GOMODCACHE，go 会去 GOPATH 下的默认路径找模块，
+	// 断网时只能报 GOPROXY=off。这是 CI 里真实出现过的回归。
+	s := baseSpec()
+	s.CacheDir = "/tmp/m"
+	s.CacheTarget = "/gomod"
+	for _, network := range []string{"none", "bridge"} {
+		s.Network = network
+		args := BuildArgs(s)
+		if !has(args, "--env", "GOMODCACHE=/gomod") {
+			t.Errorf("network=%s 时必须有 GOMODCACHE 指向挂载点: %v", network, args)
+		}
+		want := "type=bind,source=/tmp/m,target=/gomod"
+		found := false
+		for _, a := range args {
+			if strings.HasPrefix(a, want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("network=%s 缺少挂载: %v", network, args)
+		}
+	}
+}
+
 func TestBuildArgsPythonCacheTarget(t *testing.T) {
 	s := baseSpec()
 	s.Kind = KindPython

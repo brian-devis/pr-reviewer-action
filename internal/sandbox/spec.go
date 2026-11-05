@@ -84,8 +84,13 @@ func BuildArgs(s Spec) []string {
 			mount += ",readonly"
 		}
 		args = append(args, "--mount", mount)
+		// 只挂载还不够：go 必须被明确告知模块缓存的位置，否则会去 GOPATH 下的默认路径找，
+		// 断网时就只会报 GOPROXY=off
+		if s.Kind == KindGo {
+			args = append(args, "--env", "GOMODCACHE="+s.CacheTarget)
+		}
 	} else if s.Kind == KindGo {
-		// 兼容没有配置缓存的 Go 运行（如测试里的单独 Spec）
+		// 没有挂载缓存时仍然给一个可写位置（/tmp 是 tmpfs）
 		args = append(args, "--env", "GOMODCACHE=/tmp/gomod")
 	}
 	if s.Network == "none" && s.Kind == KindPython {

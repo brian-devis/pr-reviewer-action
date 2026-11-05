@@ -8,11 +8,26 @@ import (
 
 func passedSandbox() *Sandbox {
 	return &Sandbox{
+		Kind:  "go",
 		Image: "golang:1.22", Memory: "1g", CPUs: "1", Network: "none", Elapsed: 12400 * time.Millisecond,
 		Steps: []SandboxStep{
 			{Name: "test", Status: StepPassed, Detail: "通过", Duration: 8 * time.Second},
 			{Name: "lint", Status: StepPassed, Detail: "通过", Duration: 4400 * time.Millisecond},
 		},
+	}
+}
+
+func TestRenderSandboxShowsProjectKind(t *testing.T) {
+	for kind, want := range map[string]string{"go": "类型 Go", "node": "类型 Node.js", "python": "类型 Python"} {
+		s := passedSandbox()
+		s.Kind = kind
+		if got := Render(Report{NoAI: true, Sandbox: s}); !strings.Contains(got, want) {
+			t.Errorf("kind=%s 时总评应显示 %q:\n%s", kind, want, got)
+		}
+	}
+	// 没有识别出类型时不显示这一项，避免写出“类型 ”这种空值
+	if got := Render(Report{NoAI: true, Sandbox: passedSandbox()}); strings.Contains(got, "类型 \n") {
+		t.Errorf("不应出现空的类型字段:\n%s", got)
 	}
 }
 

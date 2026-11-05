@@ -231,3 +231,83 @@ func TestIntegrationGoProjectFailingTestStillRunsLint(t *testing.T) {
 		t.Fatalf("state = %s", state)
 	}
 }
+
+// nodeProjectWithDep 创建一个带第三方依赖的 Node 项目，package.json 里故意放一个
+// 会写文件的 postinstall 脚本。依赖只能在联网的 npm --ignore-scripts 阶段下载，
+// 之后断网运行，所以能跑通就证明“下载依赖 → 不执行安装脚本 → 断网运行”是对的。
+func nodeProjectWithDep(t *testing.T) string {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "package.json"), `{
+  "name": "sandboxdemo",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test": "node demo_test.js",
+    "lint": "node --check demo.js",
+    "postinstall": "node -e \"require('fs').writeFileSync('INSTALL_SCRIPT_RAN','x')\""
+  },
+  "dependencies": { "left-pad": "1.3.0" }
+}
+`)
+	write(t, filepath.Join(dir, "demo.js"), `const leftPad = require('left-pad');
+module.exports = (s) => leftPad(s, 5, '0');
+`)
+	write(t, filepath.Join(dir, "demo_test.js"), `const fs = require('fs');
+const pad = require('./demo');
+if (pad('42') !== '00042') { console.error('bad padding: ' + pad('42')); process.exit(1); }
+// postinstall 脚本绝不能执行：否则等于在准备阶段运行了 PR 依赖里的任意代码
+if (fs.existsSync('INSTALL_SCRIPT_RAN')) { console.error('postinstall 执行了'); process.exit(1); }
+`)
+	return dir
+}
+
+func TestIntegrationNodeProjectWithDependenciesPasses(t *testing.T) {
+	dir := nodeProjectWithDep(t)
+	opts, err := Resolve(Options{Source: dir, Memory: "1g", CPUs: "1", Timeout: 5 * time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep, err := Run(context.Background(), Docker{}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Kind != KindNode {
+		t.Fatalf("应识别为 Node 项目: %s", rep.Kind)
+	}
+	for _, r := range rep.Results {
+		t.Logf("%s: %s (%s)\n%s", r.Name, r.Status, r.Detail(), r.Output)
+	}
+	if state, _ := Describe(rep.Results); state != "success" {
+		t.Fatalf("带依赖的 Node 项目在断网下应能通过 test 和 lint，state=%s", state)
+	}
+}
+
+func TestIntegrationPythonProjectWithDependenciesPasses(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "requirements.txt"), "six==1.16.0\n")
+	write(t, filepath.Join(dir, "demo.py"), `import six
+
+
+def double(x):
+    return six.text_type(x) * 2
+`)
+	write(t, filepath.Join(dir, "demo_test.py"), `from demo import double
+
+assert double("ab") == "abab", double("ab")
+`)
+	opts, err := Resolve(Options{Source: dir, Memory: "1g", CPUs: "1", Timeout: 5 * time.Minute,
+		TestCmd: "python -m unittest discover -v"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep, err := Run(context.Background(), Docker{}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rep.Results {
+		t.Logf("%s: %s (%s)\n%s", r.Name, r.Status, r.Detail(), r.Output)
+	}
+	if state, _ := Describe(rep.Results); state != "success" {
+		t.Fatalf("带依赖的 Python 项目在断网下应能通过 test 和 lint，state=%s", state)
+	}
+}

@@ -11,17 +11,21 @@ import (
 
 // Options 是一次沙盒检查的配置。
 type Options struct {
-	Image   string
-	TestCmd string
-	LintCmd string
-	Memory  string
-	CPUs    string
-	Timeout time.Duration
-	Source  string // 宿主机上的仓库检出目录（GITHUB_WORKSPACE）
+	Image       string
+	TestCmd     string
+	LintCmd     string
+	InstallCmd  string // 联网准备依赖的命令，留空时按项目类型取默认值
+	Memory      string
+	CPUs        string
+	Timeout     time.Duration
+	Source      string // 宿主机上的仓库检出目录（GITHUB_WORKSPACE）
+	Project     Kind   // 留空时自动识别
+	CacheTarget string // 覆盖项目类型决定的依赖缓存挂载点
 }
 
 // Report 是一次沙盒检查的完整结果。
 type Report struct {
+	Kind    Kind
 	Image   string
 	Memory  string
 	CPUs    string
@@ -30,31 +34,71 @@ type Report struct {
 	Elapsed time.Duration
 }
 
-// Resolve 补全默认值：没有指定镜像时按 go.mod 选 golang 镜像，没有指定命令时
-// 对 Go 项目使用 go test / go vet。返回补全后的配置；无法确定要执行什么时返回 ErrNoCommands。
+// Resolve 补全默认值：没有指定镜像时按项目类型选镜像，没有指定命令时用该项目
+// 类型对应的默认 test/lint。返回补全后的配置；无法确定要执行什么时返回 ErrNoCommands。
 func Resolve(o Options) (Options, error) {
-	isGo := HasFile(o.Source, "go.mod")
+	// "auto" 和空值都表示交给 Detect 判断
+	if o.Project == "" || o.Project == "auto" {
+		o.Project = ""
+	}
+	p := Detect(o.Source)
+	if o.Project != "" && o.Project != p.Kind {
+		// 显式指定了项目类型时，只用它的默认命令和准备方式，镜像版本仍按源码目录判断
+		p = projectFor(o.Project, o.Source)
+	}
+	o.Project = p.Kind
 	if o.TestCmd == "" && o.LintCmd == "" {
-		if !isGo {
+		if p.TestCmd == "" {
 			return o, ErrNoCommands
 		}
-		o.TestCmd, o.LintCmd = "go test ./...", "go vet ./..."
+		o.TestCmd, o.LintCmd = p.TestCmd, p.LintCmd
 	}
 	if o.Image == "" {
-		v := GoVersion(o.Source)
-		if !isGo || v == "" {
-			v = "1.23"
-		}
-		o.Image = "golang:" + v
+		o.Image = p.DefaultImage
+	}
+	if o.InstallCmd == "" {
+		o.InstallCmd = p.InstallCmd
+	}
+	if o.CacheTarget == "" {
+		o.CacheTarget = p.CacheTarget
 	}
 	return o, nil
 }
 
+// projectFor 生成本次运行使用的 Project：类型由调用方指定，版本信息仍从源码里读。
+func projectFor(k Kind, dir string) Project {
+	switch k {
+	case KindGo:
+		return Project{Kind: KindGo, Label: "Go", DefaultImage: "golang:" + defaultOr(GoVersion(dir), "1.23"),
+			TestCmd: "go test ./...", LintCmd: "go vet ./...", InstallCmd: "go mod download", CacheTarget: "/gomod"}
+	case KindNode:
+		return Project{Kind: KindNode, Label: "Node.js", DefaultImage: "node:" + nodeVersion(dir),
+			TestCmd: "npm test --if-present", LintCmd: "npm run lint --if-present",
+			InstallCmd: npmInstallCmd(dir)}
+	case KindPython:
+		return Project{Kind: KindPython, Label: "Python", DefaultImage: "python:" + pythonVersion(dir),
+			TestCmd: "python -m pytest -q", LintCmd: "python -m compileall -q .",
+			InstallCmd: pipInstallCmd(dir), CacheTarget: "/deps"}
+	}
+	return Project{Kind: KindGeneric, Label: "通用", DefaultImage: "golang:1.23"}
+}
+
+func defaultOr(v, def string) string {
+	if v == "" {
+		return def
+	}
+	return v
+}
+
 // Run 在沙盒里依次执行依赖准备、测试和 Lint。Test 和 Lint 各用一个独立容器，
 // 即使 Test 失败也会继续跑 Lint，分别收集结果。
+//
+// 依赖准备是唯一联网的步骤：它只下载依赖，不执行 PR 里的代码（Go 用
+// go mod download，Node 用 npm --ignore-scripts，Python 用 pip --only-binary）。
+// 之后的 test 和 lint 全部断网运行。
 func Run(ctx context.Context, r Runner, o Options) (Report, error) {
 	start := time.Now()
-	rep := Report{Image: o.Image, Memory: o.Memory, CPUs: o.CPUs, Network: "none"}
+	rep := Report{Kind: o.Project, Image: o.Image, Memory: o.Memory, CPUs: o.CPUs, Network: "none"}
 
 	work, err := os.MkdirTemp("", "prr-work-*")
 	if err != nil {
@@ -65,25 +109,28 @@ func Run(ctx context.Context, r Runner, o Options) (Report, error) {
 		return rep, fmt.Errorf("复制工作副本失败: %w", err)
 	}
 
-	var modCache string
-	if HasFile(work, "go.mod") {
-		if modCache, err = os.MkdirTemp("", "prr-gomod-*"); err != nil {
+	var cache string
+	// 只有需要额外挂载依赖目录的项目（Go 的模块缓存、Python 的 --target 目录）才创建缓存；
+	// Node 的 node_modules 直接装在工作副本里，不需要挂载。
+	if o.InstallCmd != "" && o.CacheTarget != "" {
+		if cache, err = os.MkdirTemp("", "prr-deps-*"); err != nil {
 			return rep, err
 		}
-		defer os.RemoveAll(modCache)
-		if err := os.Chmod(modCache, 0o777); err != nil {
+		defer os.RemoveAll(cache)
+		if err := os.Chmod(cache, 0o777); err != nil {
 			return rep, err
 		}
+	}
 
-		// 准备阶段联网，但同样受资源限制、不带任何密钥；go mod download 只下载
-		// 模块，不会执行 PR 里的代码。
-		prep := r.Run(ctx, spec(o, "deps", "go mod download", work, modCache, "bridge", true))
+	if o.InstallCmd != "" {
+		// 准备阶段联网，但同样受资源限制、不带任何密钥
+		prep := r.Run(ctx, spec(o, "deps", o.InstallCmd, work, cache, "bridge", true))
 		prep.Name = "deps"
 		if prep.Status != Passed {
 			// 没有依赖，后面的步骤必然失败且没有意义；用 Errored 表示这是环境问题
 			if prep.Status == Failed {
 				prep.Status = Errored
-				prep.Err = fmt.Errorf("准备 Go 依赖失败（退出码 %d）", prep.ExitCode)
+				prep.Err = fmt.Errorf("准备依赖失败（退出码 %d）", prep.ExitCode)
 			}
 			rep.Results = append(rep.Results, prep)
 			rep.Elapsed = time.Since(start)
@@ -96,7 +143,7 @@ func Run(ctx context.Context, r Runner, o Options) (Report, error) {
 		if st.cmd == "" {
 			continue
 		}
-		res := r.Run(ctx, spec(o, st.name, st.cmd, work, modCache, "none", false))
+		res := r.Run(ctx, spec(o, st.name, st.cmd, work, cache, "none", false))
 		res.Name = st.name
 		rep.Results = append(rep.Results, res)
 	}
@@ -104,18 +151,24 @@ func Run(ctx context.Context, r Runner, o Options) (Report, error) {
 	return rep, nil
 }
 
-func spec(o Options, name, cmd, work, modCache, network string, modWritable bool) Spec {
+func spec(o Options, name, cmd, work, cache, network string, cacheWritable bool) Spec {
+	kind := o.Project
+	if kind == "" {
+		kind = KindGeneric
+	}
 	return Spec{
-		Name:             "prr-" + name + "-" + randomHex(6),
-		Image:            o.Image,
-		Command:          cmd,
-		Memory:           o.Memory,
-		CPUs:             o.CPUs,
-		Timeout:          o.Timeout,
-		Network:          network,
-		WorkDir:          work,
-		ModCache:         modCache,
-		ModCacheWritable: modWritable,
+		Name:          "prr-" + name + "-" + randomHex(6),
+		Kind:          kind,
+		Image:         o.Image,
+		Command:       cmd,
+		Memory:        o.Memory,
+		CPUs:          o.CPUs,
+		Timeout:       o.Timeout,
+		Network:       network,
+		WorkDir:       work,
+		CacheDir:      cache,
+		CacheTarget:   o.CacheTarget,
+		CacheWritable: cacheWritable,
 	}
 }
 

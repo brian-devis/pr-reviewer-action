@@ -33,6 +33,7 @@ type SandboxStep struct {
 
 // Sandbox 是总评里沙盒测试一节的内容。
 type Sandbox struct {
+	Kind    string // go | node | python | generic，用于展示识别出的项目类型
 	Image   string
 	Memory  string
 	CPUs    string
@@ -42,6 +43,8 @@ type Sandbox struct {
 }
 
 var stepTitles = map[string]string{"deps": "依赖准备", "test": "单元测试", "lint": "Lint / 静态检查"}
+
+var kindLabels = map[string]string{"go": "Go", "node": "Node.js", "python": "Python", "generic": "自定义"}
 
 var ansiRe = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 
@@ -96,8 +99,12 @@ func renderSandbox(b *strings.Builder, s Sandbox) {
 	if s.Network != "none" {
 		network = s.Network
 	}
-	fmt.Fprintf(b, "\n<sub>镜像 `%s` · 内存 %s · CPU %s · 网络 %s · 总耗时 %s</sub>\n",
-		escapeCell(s.Image), s.Memory, s.CPUs, network, s.Elapsed.Round(100*time.Millisecond))
+	kind := ""
+	if label, ok := kindLabels[s.Kind]; ok {
+		kind = "类型 " + label + " · "
+	}
+	fmt.Fprintf(b, "\n<sub>%s镜像 `%s` · 内存 %s · CPU %s · 网络 %s · 总耗时 %s</sub>\n",
+		kind, escapeCell(s.Image), s.Memory, s.CPUs, network, s.Elapsed.Round(100*time.Millisecond))
 
 	// 只展开没通过的步骤的输出，失败原因通常在末尾
 	for _, st := range s.Steps {

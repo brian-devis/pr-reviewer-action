@@ -43,3 +43,82 @@ jobs:
           enable_sandbox: "true"
           sandbox_test_command: go test ./...
           sandbox_lint_command: go vet ./...
+
+  # Node 沙盒：用一个带依赖和 postinstall 脚本的小项目，验证自动识别、离线运行
+  # 和“准备阶段不执行安装脚本”。命令直接从 workflow 配置传入，不经过模型。
+  #
+  # action 仓库 checkout 到子目录，示例项目放在工作区根目录，这样 GITHUB_WORKSPACE
+  # 指向的就是示例项目本身（GITHUB_* 变量无法用 step 级 env 覆盖）。
+  sandbox-node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: action-src
+      - name: 准备 Node 示例项目
+        run: |
+          cat > package.json <<'JSON'
+          {
+            "name": "sandboxdemo",
+            "version": "1.0.0",
+            "private": true,
+            "scripts": {
+              "test": "node demo_test.js",
+              "lint": "node --check demo.js",
+              "postinstall": "node -e \"require('fs').writeFileSync('INSTALL_SCRIPT_RAN','x')\""
+            },
+            "dependencies": { "left-pad": "1.3.0" }
+          }
+          JSON
+          cat > demo.js <<'JS'
+          const leftPad = require('left-pad');
+          module.exports = (s) => leftPad(s, 5, '0');
+          JS
+          cat > demo_test.js <<'JS'
+          const fs = require('fs');
+          const pad = require('./demo');
+          if (pad('42') !== '00042') { console.error('bad padding'); process.exit(1); }
+          if (fs.existsSync('INSTALL_SCRIPT_RAN')) { console.error('postinstall 执行了'); process.exit(1); }
+          console.log('node demo ok');
+          JS
+      - uses: ./action-src
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          enable_ai_review: "false"
+          enable_sandbox: "true"
+          sandbox_test_command: npm test
+          sandbox_lint_command: npm run lint
+
+  # Python 沙盒：带第三方依赖，验证 pip --only-binary 准备阶段和断网运行
+  sandbox-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: action-src
+      - name: 准备 Python 示例项目
+        run: |
+          printf 'six==1.16.0\n' > requirements.txt
+          cat > demo.py <<'PY'
+          import six
+
+
+          def double(x):
+              return six.text_type(x) * 2
+          PY
+          cat > demo_test.py <<'PY'
+          from demo import double
+
+          assert double("ab") == "abab", double("ab")
+          PY
+      - uses: ./action-src
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          enable_ai_review: "false"
+          enable_sandbox: "true"
+          sandbox_test_command: python -m unittest discover -v
+          sandbox_lint_command: python -m compileall -q demo.py

@@ -120,5 +120,5 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           enable_ai_review: "false"
           enable_sandbox: "true"
-          sandbox_test_command: python -m unittest discover -v
+          sandbox_test_command: python -m unittest discover -v -p "*_test.py"
           sandbox_lint_command: python -m compileall -q demo.py

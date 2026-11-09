@@ -296,7 +296,7 @@ def double(x):
 assert double("ab") == "abab", double("ab")
 `)
 	opts, err := Resolve(Options{Source: dir, Memory: "1g", CPUs: "1", Timeout: 5 * time.Minute,
-		TestCmd: "python -m unittest discover -v"})
+		TestCmd: `python -m unittest discover -v -p "*_test.py"`})
 	if err != nil {
 		t.Fatal(err)
 	}

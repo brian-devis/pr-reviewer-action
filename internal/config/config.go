@@ -40,9 +40,11 @@ type Config struct {
 
 	// 沙盒测试
 	Workspace            string // 仓库检出目录（GITHUB_WORKSPACE）
+	SandboxLanguage      string // auto | go | node | python
 	SandboxImage         string
 	SandboxTestCmd       string
 	SandboxLintCmd       string
+	SandboxInstallCmd    string
 	SandboxMemory        string
 	SandboxCPUs          string
 	SandboxTimeout       time.Duration
@@ -60,6 +62,8 @@ var (
 	memoryRe = regexp.MustCompile(`^[1-9][0-9]*[bkmgBKMG]?$`)
 	// 镜像名：不能以 - 开头，也不能含空格或其他会被 docker 当成选项或参数的字符
 	imageRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/:@-]*$`)
+	// commit status 名称：会写进评论里的 HTML 注释标记，不能含空格或 > 等字符
+	contextRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
 )
 
 const maxSandboxTimeout = time.Hour
@@ -110,6 +114,9 @@ func (c *Config) loadAI() error {
 	c.Exclude = splitList(os.Getenv("INPUT_EXCLUDE_PATHS"))
 	c.FailOn = strings.ToLower(envDefault("INPUT_FAIL_ON", "never"))
 	c.StatusContext = envDefault("INPUT_STATUS_CONTEXT", "ai-review")
+	if !contextRe.MatchString(c.StatusContext) {
+		return fmt.Errorf("status_context 取值无效 %q，只允许字母、数字、点、下划线和连字符（最长 100）", c.StatusContext)
+	}
 
 	if !review.ValidFailOn(c.FailOn) {
 		return fmt.Errorf("fail_on 取值无效 %q，可选 never、error、warning", c.FailOn)
@@ -138,14 +145,24 @@ func (c *Config) loadAI() error {
 
 // loadSandbox 读取并校验沙盒测试的配置。只有 enable_sandbox 打开时才会调用。
 func (c *Config) loadSandbox() error {
+	c.SandboxLanguage = strings.ToLower(envDefault("INPUT_SANDBOX_LANGUAGE", "auto"))
 	c.SandboxImage = strings.TrimSpace(os.Getenv("INPUT_SANDBOX_IMAGE"))
 	c.SandboxTestCmd = strings.TrimSpace(os.Getenv("INPUT_SANDBOX_TEST_COMMAND"))
 	c.SandboxLintCmd = strings.TrimSpace(os.Getenv("INPUT_SANDBOX_LINT_COMMAND"))
+	c.SandboxInstallCmd = strings.TrimSpace(os.Getenv("INPUT_SANDBOX_INSTALL_COMMAND"))
 	c.SandboxMemory = strings.ToLower(envDefault("INPUT_SANDBOX_MEMORY", "1g"))
 	c.SandboxStatusContext = envDefault("INPUT_SANDBOX_STATUS_CONTEXT", "sandbox-tests")
+	if !contextRe.MatchString(c.SandboxStatusContext) {
+		return fmt.Errorf("sandbox_status_context 取值无效 %q，只允许字母、数字、点、下划线和连字符（最长 100）", c.SandboxStatusContext)
+	}
 
 	if c.Workspace == "" {
 		return errors.New("缺少 GITHUB_WORKSPACE：沙盒需要代码，请先使用 actions/checkout")
+	}
+	switch c.SandboxLanguage {
+	case "auto", "go", "node", "python":
+	default:
+		return fmt.Errorf("sandbox_language 取值无效 %q，可选 auto、go、node、python", c.SandboxLanguage)
 	}
 	if c.SandboxImage != "" && !imageRe.MatchString(c.SandboxImage) {
 		return fmt.Errorf("sandbox_image 取值无效 %q", c.SandboxImage)

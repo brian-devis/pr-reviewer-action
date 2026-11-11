@@ -33,6 +33,11 @@ type SandboxStep struct {
 
 // Sandbox 是总评里沙盒测试一节的内容。
 type Sandbox struct {
+	Kind string // go | node | python | generic，用于展示识别出的项目类型
+	// Also 是自动识别时还检测到的其他项目类型，用来提示“可能选错了”。
+	Also []string
+	// Context 是这次运行的 sandbox_status_context，用于区分同一仓库里的多个沙盒 job。
+	Context string
 	Image   string
 	Memory  string
 	CPUs    string
@@ -42,6 +47,8 @@ type Sandbox struct {
 }
 
 var stepTitles = map[string]string{"deps": "依赖准备", "test": "单元测试", "lint": "Lint / 静态检查"}
+
+var kindLabels = map[string]string{"go": "Go", "node": "Node.js", "python": "Python", "generic": "自定义"}
 
 var ansiRe = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 
@@ -83,8 +90,31 @@ func SandboxHeadline(steps []SandboxStep) string {
 	return "✅ 沙盒检查通过"
 }
 
+// alsoNote 在自动识别同时命中多种项目类型时给出提示。识别按 Go → Node → Python 的
+// 顺序取第一个，用户可能想要的是另一个，所以不能静默选择。
+func alsoNote(s Sandbox) string {
+	chosen, ok := kindLabels[s.Kind]
+	if !ok || len(s.Also) == 0 {
+		return ""
+	}
+	var others []string
+	for _, k := range s.Also {
+		if label, ok := kindLabels[k]; ok {
+			others = append(others, label)
+		}
+	}
+	if len(others) == 0 {
+		return ""
+	}
+	return "> ℹ️ 自动识别为 **" + chosen + "** 项目，同时还检测到 " + strings.Join(others, "、") +
+		" 的标志文件。如果要检查的是其中另一个，请设置 `sandbox_language`，或直接指定镜像和命令。"
+}
+
 func renderSandbox(b *strings.Builder, s Sandbox) {
 	fmt.Fprintf(b, "\n### 🧪 沙盒测试 · %s\n\n", SandboxHeadline(s.Steps))
+	if note := alsoNote(s); note != "" {
+		b.WriteString(note + "\n\n")
+	}
 
 	b.WriteString("| 检查 | 结果 | 说明 | 耗时 |\n|---|---|---|---|\n")
 	for _, st := range s.Steps {
@@ -96,8 +126,12 @@ func renderSandbox(b *strings.Builder, s Sandbox) {
 	if s.Network != "none" {
 		network = s.Network
 	}
-	fmt.Fprintf(b, "\n<sub>镜像 `%s` · 内存 %s · CPU %s · 网络 %s · 总耗时 %s</sub>\n",
-		escapeCell(s.Image), s.Memory, s.CPUs, network, s.Elapsed.Round(100*time.Millisecond))
+	kind := ""
+	if label, ok := kindLabels[s.Kind]; ok {
+		kind = "类型 " + label + " · "
+	}
+	fmt.Fprintf(b, "\n<sub>%s镜像 `%s` · 内存 %s · CPU %s · 网络 %s · 总耗时 %s</sub>\n",
+		kind, escapeCell(s.Image), s.Memory, s.CPUs, network, s.Elapsed.Round(100*time.Millisecond))
 
 	// 只展开没通过的步骤的输出，失败原因通常在末尾
 	for _, st := range s.Steps {

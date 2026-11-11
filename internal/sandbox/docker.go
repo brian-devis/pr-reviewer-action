@@ -77,6 +77,9 @@ func (d Docker) Run(ctx context.Context, s Spec) Result {
 		d.remove(s.Name)
 	} else if res.Err == nil {
 		res.OOM = d.detectOOM(s.Name, res.ExitCode)
+		// 137 说明进程被 SIGKILL 杀掉，而我们没有主动杀它（没超时）。Docker 的 OOMKilled
+		// 标志在部分环境里会随机丢失，标志为 false 也不能排除内存溢出。
+		res.SuspectedOOM = !res.OOM && res.ExitCode == sigkillExit
 	}
 
 	out, truncated := tail.String()

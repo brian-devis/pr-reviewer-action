@@ -21,7 +21,8 @@ type availabilityChecker interface {
 // 任何模型配置，沙盒不依赖 AI 评审。
 func runSandbox(ctx context.Context, cfg *config.Config, r sandbox.Runner) (review.Sandbox, string, string, error) {
 	section := review.Sandbox{
-		Image: cfg.SandboxImage, Memory: cfg.SandboxMemory, CPUs: cfg.SandboxCPUs, Network: "none",
+		Context: cfg.SandboxStatusContext,
+		Image:   cfg.SandboxImage, Memory: cfg.SandboxMemory, CPUs: cfg.SandboxCPUs, Network: "none",
 	}
 	fail := func(err error) (review.Sandbox, string, string, error) {
 		section.Steps = []review.SandboxStep{{Name: "sandbox", Status: review.StepError, Detail: err.Error()}}
@@ -34,23 +35,30 @@ func runSandbox(ctx context.Context, cfg *config.Config, r sandbox.Runner) (revi
 		}
 	}
 	opts, err := sandbox.Resolve(sandbox.Options{
-		Image:   cfg.SandboxImage,
-		TestCmd: cfg.SandboxTestCmd,
-		LintCmd: cfg.SandboxLintCmd,
-		Memory:  cfg.SandboxMemory,
-		CPUs:    cfg.SandboxCPUs,
-		Timeout: cfg.SandboxTimeout,
-		Source:  cfg.Workspace,
+		Image:      cfg.SandboxImage,
+		TestCmd:    cfg.SandboxTestCmd,
+		LintCmd:    cfg.SandboxLintCmd,
+		InstallCmd: cfg.SandboxInstallCmd,
+		Memory:     cfg.SandboxMemory,
+		CPUs:       cfg.SandboxCPUs,
+		Timeout:    cfg.SandboxTimeout,
+		Source:     cfg.Workspace,
+		Project:    sandbox.Kind(cfg.SandboxLanguage),
 	})
 	if err != nil {
 		return fail(err)
 	}
 	section.Image = opts.Image
+	section.Kind = string(opts.Project)
+	for _, k := range opts.AlsoDetected {
+		section.Also = append(section.Also, string(k))
+	}
 
 	rep, err := sandbox.Run(ctx, r, opts)
 	if err != nil {
 		return fail(err)
 	}
+	rep.Context = cfg.SandboxStatusContext
 	if len(rep.Results) == 0 {
 		return fail(errors.New("没有执行任何检查"))
 	}
@@ -61,7 +69,8 @@ func runSandbox(ctx context.Context, cfg *config.Config, r sandbox.Runner) (revi
 // toSection 把沙盒的运行结果转换成总评里展示的内容。
 func toSection(rep sandbox.Report) review.Sandbox {
 	s := review.Sandbox{
-		Image: rep.Image, Memory: rep.Memory, CPUs: rep.CPUs, Network: rep.Network, Elapsed: rep.Elapsed,
+		Context: rep.Context,
+		Image:   rep.Image, Memory: rep.Memory, CPUs: rep.CPUs, Network: rep.Network, Elapsed: rep.Elapsed,
 	}
 	for _, r := range rep.Results {
 		s.Steps = append(s.Steps, review.SandboxStep{

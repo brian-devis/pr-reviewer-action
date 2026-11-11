@@ -14,7 +14,7 @@ import (
 
 func baseSpec() Spec {
 	return Spec{
-		Name: "prr-test-abc", Image: "golang:1.22", Command: "go test ./...",
+		Name: "prr-test-abc", Kind: KindGo, Image: "golang:1.22", Command: "go test ./...",
 		Memory: "1g", CPUs: "1", Timeout: time.Minute, Network: "none", WorkDir: "/tmp/w",
 	}
 }
@@ -114,18 +114,85 @@ func TestBuildArgsGoPathIsWritable(t *testing.T) {
 	}
 }
 
-func TestBuildArgsModCacheMount(t *testing.T) {
+func TestBuildArgsCacheMount(t *testing.T) {
 	s := baseSpec()
-	s.ModCache = "/tmp/m"
+	s.CacheDir = "/tmp/m"
+	s.CacheTarget = "/gomod"
 	if !has(BuildArgs(s), "--mount", "type=bind,source=/tmp/m,target=/gomod,readonly") {
-		t.Fatalf("测试阶段模块缓存应只读挂载: %v", BuildArgs(s))
+		t.Fatalf("测试阶段依赖缓存应只读挂载: %v", BuildArgs(s))
 	}
-	s.ModCacheWritable = true
+	s.CacheWritable = true
 	if !has(BuildArgs(s), "--mount", "type=bind,source=/tmp/m,target=/gomod") {
-		t.Fatalf("准备阶段模块缓存应可写: %v", BuildArgs(s))
+		t.Fatalf("准备阶段依赖缓存应可写: %v", BuildArgs(s))
 	}
 	if !has(BuildArgs(baseSpec()), "--workdir", "/work") {
 		t.Fatal("应以 /work 为工作目录")
+	}
+}
+
+func TestBuildArgsGoModCacheEnvMatchesMount(t *testing.T) {
+	// 只挂载 /gomod 而不设置 GOMODCACHE，go 会去 GOPATH 下的默认路径找模块，
+	// 断网时只能报 GOPROXY=off。这是 CI 里真实出现过的回归。
+	s := baseSpec()
+	s.CacheDir = "/tmp/m"
+	s.CacheTarget = "/gomod"
+	for _, network := range []string{"none", "bridge"} {
+		s.Network = network
+		args := BuildArgs(s)
+		if !has(args, "--env", "GOMODCACHE=/gomod") {
+			t.Errorf("network=%s 时必须有 GOMODCACHE 指向挂载点: %v", network, args)
+		}
+		want := "type=bind,source=/tmp/m,target=/gomod"
+		found := false
+		for _, a := range args {
+			if strings.HasPrefix(a, want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("network=%s 缺少挂载: %v", network, args)
+		}
+	}
+}
+
+func TestBuildArgsPythonCacheTarget(t *testing.T) {
+	s := baseSpec()
+	s.Kind = KindPython
+	s.Image = "python:3.12"
+	s.CacheDir = "/tmp/d"
+	s.CacheTarget = "/deps"
+	args := BuildArgs(s)
+	if !has(args, "--mount", "type=bind,source=/tmp/d,target=/deps,readonly") {
+		t.Fatalf("Python 依赖应挂载到 /deps: %v", args)
+	}
+	if !has(args, "--env", "PYTHONPATH=/deps") {
+		t.Fatalf("应从 /deps 导入依赖: %v", args)
+	}
+	if has(args, "--env", "GOPATH=/tmp/gopath") {
+		t.Error("非 Go 项目不应注入 Go 专用环境变量")
+	}
+}
+
+func TestBuildArgsNodeEnv(t *testing.T) {
+	s := baseSpec()
+	s.Kind = KindNode
+	s.Image = "node:22"
+	args := BuildArgs(s)
+	for _, want := range [][]string{
+		{"--env", "npm_config_cache=/tmp/npm-cache"},
+		{"--env", "CI=true"},
+		{"--env", "npm_config_offline=true"},
+	} {
+		if !has(args, want...) {
+			t.Errorf("缺少 %v: %v", want, args)
+		}
+	}
+	if has(args, "--env", "GOPROXY=off") {
+		t.Error("Node 项目不应注入 Go 专用环境变量")
+	}
+	s.Network = "bridge"
+	if has(BuildArgs(s), "--env", "npm_config_offline=true") {
+		t.Error("联网准备阶段不应强制 npm 离线")
 	}
 }
 
@@ -138,6 +205,7 @@ func TestClassify(t *testing.T) {
 		{"通过", Result{}, Passed},
 		{"命令失败", Result{ExitCode: 1}, Failed},
 		{"OOM 是 error", Result{ExitCode: 137, OOM: true}, Errored},
+		{"疑似 OOM 是 error", Result{ExitCode: 137, SuspectedOOM: true}, Errored},
 		{"超时是 error", Result{ExitCode: 137, TimedOut: true}, Errored},
 		{"docker 错误是 error", Result{Err: errors.New("x")}, Errored},
 	}
@@ -351,11 +419,11 @@ func TestRunStepsAndIsolation(t *testing.T) {
 	}
 	deps, test, lint := f.specs[0], f.specs[1], f.specs[2]
 
-	if deps.Network != "bridge" || !deps.ModCacheWritable || deps.Command != "go mod download" {
+	if deps.Network != "bridge" || !deps.CacheWritable || deps.Command != "go mod download" {
 		t.Errorf("准备阶段应联网并可写模块缓存: %+v", deps)
 	}
 	for _, s := range []Spec{test, lint} {
-		if s.Network != "none" || s.ModCacheWritable {
+		if s.Network != "none" || s.CacheWritable {
 			t.Errorf("运行阶段必须断网且模块缓存只读: %+v", s)
 		}
 	}
@@ -411,7 +479,19 @@ func TestRunNonGoProjectSkipsDependencyPrep(t *testing.T) {
 	if _, err := Run(context.Background(), f, o); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.specs) != 1 || f.specs[0].Network != "none" || f.specs[0].ModCache != "" {
+	if len(f.specs) != 1 || f.specs[0].Network != "none" || f.specs[0].CacheDir != "" {
 		t.Fatalf("非 Go 项目不应联网准备依赖: %+v", f.specs)
+	}
+}
+
+func TestSuspectedOOMDetailDoesNotClaimCertainty(t *testing.T) {
+	r := Result{ExitCode: 137, SuspectedOOM: true}
+	r.Status = Classify(r)
+	d := r.Detail()
+	if r.Status != Errored || !strings.Contains(d, "疑似") || !strings.Contains(d, "137") {
+		t.Fatalf("疑似 OOM 应是 error，且说明里要体现“疑似”: %s %q", r.Status, d)
+	}
+	if confirmed := (Result{OOM: true}).Detail(); strings.Contains(confirmed, "疑似") {
+		t.Fatalf("确认的 OOM 不应写“疑似”: %q", confirmed)
 	}
 }

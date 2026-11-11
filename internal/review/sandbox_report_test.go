@@ -8,11 +8,26 @@ import (
 
 func passedSandbox() *Sandbox {
 	return &Sandbox{
+		Kind:  "go",
 		Image: "golang:1.22", Memory: "1g", CPUs: "1", Network: "none", Elapsed: 12400 * time.Millisecond,
 		Steps: []SandboxStep{
 			{Name: "test", Status: StepPassed, Detail: "通过", Duration: 8 * time.Second},
 			{Name: "lint", Status: StepPassed, Detail: "通过", Duration: 4400 * time.Millisecond},
 		},
+	}
+}
+
+func TestRenderSandboxShowsProjectKind(t *testing.T) {
+	for kind, want := range map[string]string{"go": "类型 Go", "node": "类型 Node.js", "python": "类型 Python"} {
+		s := passedSandbox()
+		s.Kind = kind
+		if got := Render(Report{NoAI: true, Sandbox: s}); !strings.Contains(got, want) {
+			t.Errorf("kind=%s 时总评应显示 %q:\n%s", kind, want, got)
+		}
+	}
+	// 没有识别出类型时不显示这一项，避免写出“类型 ”这种空值
+	if got := Render(Report{NoAI: true, Sandbox: passedSandbox()}); strings.Contains(got, "类型 \n") {
+		t.Errorf("不应出现空的类型字段:\n%s", got)
 	}
 }
 
@@ -145,5 +160,56 @@ func TestSanitizeRemovesBothMarkers(t *testing.T) {
 	got := Sanitize("a" + Marker + "b" + SandboxMarker + "c")
 	if got != "abc" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestRenderSandboxNotesOtherDetectedKinds(t *testing.T) {
+	s := passedSandbox()
+	s.Kind, s.Also = "go", []string{"node", "python"}
+	got := Render(Report{NoAI: true, Sandbox: s})
+	for _, want := range []string{"自动识别为 **Go**", "Node.js、Python", "sandbox_language"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("缺少 %q:\n%s", want, got)
+		}
+	}
+	// 提示必须在表格之前，否则会打断 Markdown 表格
+	if strings.Index(got, "自动识别为") > strings.Index(got, "| 检查 |") {
+		t.Errorf("提示应在表格之前:\n%s", got)
+	}
+	// 没有其他类型，或类型未知时不输出
+	s.Also = nil
+	if strings.Contains(Render(Report{NoAI: true, Sandbox: s}), "自动识别为") {
+		t.Error("没有其他类型时不应提示")
+	}
+	s.Also, s.Kind = []string{"node"}, ""
+	if strings.Contains(Render(Report{NoAI: true, Sandbox: s}), "自动识别为") {
+		t.Error("未识别出类型时不应提示")
+	}
+}
+
+func TestCommentMarkerSeparatesSandboxContexts(t *testing.T) {
+	mk := func(ctx string) string {
+		return CommentMarker(Report{NoAI: true, Sandbox: &Sandbox{Context: ctx}})
+	}
+	// 默认 context 沿用旧标记，升级后已发布的评论仍能更新
+	if got := mk("sandbox-tests"); got != SandboxMarker {
+		t.Fatalf("默认 context 应沿用原标记: %q", got)
+	}
+	if got := mk(""); got != SandboxMarker {
+		t.Fatalf("空 context 应沿用原标记: %q", got)
+	}
+	// 不同 context 必须互不相同，否则多个沙盒 job 会互相覆盖评论
+	a, b := mk("sandbox-node"), mk("sandbox-python")
+	if a == b || a == SandboxMarker || b == SandboxMarker {
+		t.Fatalf("不同 context 应有不同标记: %q %q", a, b)
+	}
+	for _, m := range []string{a, b} {
+		if !strings.HasPrefix(m, "<!--") || !strings.HasSuffix(m, "-->") {
+			t.Fatalf("标记必须是合法的 HTML 注释: %q", m)
+		}
+	}
+	// 有 AI 评审时始终用 AI 标记
+	if got := CommentMarker(Report{Sandbox: &Sandbox{Context: "sandbox-node"}}); got != Marker {
+		t.Fatalf("AI 报告应使用 Marker: %q", got)
 	}
 }

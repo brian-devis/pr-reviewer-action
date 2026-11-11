@@ -20,14 +20,25 @@ const Marker = "<!-- pr-ai-reviewer -->"
 // 如果共用一个标记，后跑完的会把先跑完的评论覆盖掉，所以各用各的。
 const SandboxMarker = "<!-- pr-sandbox-tests -->"
 
+// DefaultSandboxContext 是 sandbox_status_context 的默认值。使用默认值时沿用
+// SandboxMarker，已发布的评论仍能被找到并更新。
+const DefaultSandboxContext = "sandbox-tests"
+
 // CommentMarker 返回这份报告对应的总评标记：
 //   - 有 AI 评审（无论是否同时有沙盒）：Marker；
-//   - 只有沙盒：SandboxMarker。
+//   - 只有沙盒：SandboxMarker，默认 context 之外再按 status context 区分。
+//
+// 同一个仓库可能同时运行多个沙盒 job（例如 Go、Node 各一个），它们的
+// sandbox_status_context 不同。如果共用一个标记，后跑完的会把先跑完的评论
+// 覆盖掉，所以用 context 后缀区分。默认 context 保持原标记，已发的评论仍能更新。
 func CommentMarker(r Report) string {
-	if r.NoAI {
-		return SandboxMarker
+	if !r.NoAI {
+		return Marker
 	}
-	return Marker
+	if r.Sandbox != nil && r.Sandbox.Context != "" && r.Sandbox.Context != DefaultSandboxContext {
+		return "<!-- pr-sandbox-tests " + r.Sandbox.Context + " -->"
+	}
+	return SandboxMarker
 }
 
 const systemPrompt = `你是一名资深代码审查员，负责审查用户提供的 Pull Request 改动。

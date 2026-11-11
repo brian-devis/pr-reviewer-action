@@ -30,6 +30,7 @@ type Options struct {
 type Report struct {
 	Kind    Kind
 	Also    []Kind // 见 Options.AlsoDetected
+	Context string // commit status 名称，来自 sandbox_status_context
 	Image   string
 	Memory  string
 	CPUs    string

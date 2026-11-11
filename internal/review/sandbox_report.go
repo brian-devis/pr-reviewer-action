@@ -35,7 +35,9 @@ type SandboxStep struct {
 type Sandbox struct {
 	Kind string // go | node | python | generic，用于展示识别出的项目类型
 	// Also 是自动识别时还检测到的其他项目类型，用来提示“可能选错了”。
-	Also    []string
+	Also []string
+	// Context 是这次运行的 sandbox_status_context，用于区分同一仓库里的多个沙盒 job。
+	Context string
 	Image   string
 	Memory  string
 	CPUs    string

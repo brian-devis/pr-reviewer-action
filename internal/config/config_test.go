@@ -326,3 +326,33 @@ func TestRunURL(t *testing.T) {
 		t.Fatalf("RunURL=%q err=%v", c.RunURL, err)
 	}
 }
+
+func TestStatusContextMustBeSelectorSafe(t *testing.T) {
+	// 这些值会被写进评论里的 HTML 注释标记，不能含空格或 > 之类字符。
+	// status_context 只在 AI 评审开启时读取，sandbox_status_context 只在沙盒开启时读取。
+	tests := []struct {
+		key     string
+		fixture func(*testing.T)
+	}{
+		{"INPUT_STATUS_CONTEXT", func(t *testing.T) {
+			setupEnv(t, `{"pull_request":{"number":3,"head":{"sha":"headsha"}}}`)
+		}},
+		{"INPUT_SANDBOX_STATUS_CONTEXT", sandboxOnly},
+	}
+	for _, tt := range tests {
+		for _, bad := range []string{"a b", "x-->", "abc<", "很长状态名"} {
+			t.Run(tt.key+"="+bad, func(t *testing.T) {
+				tt.fixture(t)
+				t.Setenv(tt.key, bad)
+				if _, err := Load(); err == nil {
+					t.Fatalf("%s=%q 应被拒绝", tt.key, bad)
+				}
+			})
+		}
+	}
+	sandboxOnly(t)
+	t.Setenv("INPUT_SANDBOX_STATUS_CONTEXT", "sandbox-node")
+	if _, err := Load(); err != nil {
+		t.Fatalf("合法名称应通过: %v", err)
+	}
+}

@@ -70,7 +70,7 @@ jobs:
 | `sandbox_cpus` | `1` | 每个容器的 CPU 上限 |
 | `sandbox_timeout` | `5m` | 每个步骤的超时，最长 `1h` |
 | `sandbox_network` | `none` | 目前只支持 `none` |
-| `sandbox_status_context` | `sandbox-tests` | 沙盒 commit status 的名称 |
+| `sandbox_status_context` | `sandbox-tests` | 沙盒 commit status 的名称；同一仓库有多个沙盒 job 时各自设成不同的值，评论和状态才不会互相覆盖 |
 | `exclude_paths` | 空 | 额外排除的路径，逗号或换行分隔；`dir/` 表示目录，`*.md` 之类按 `path.Match` 匹配（不支持 `**`） |
 
 ## 作为合并门禁
@@ -147,6 +147,8 @@ jobs:
 ### commit status
 
 写到 PR 的 **head 提交**（不是 `pull_request` 默认检出的合并提交），名称 `sandbox-tests`，并带有指向本次运行日志的链接。
+
+同一个仓库里跑多个沙盒 job（例如 Go、Node 各一个）时，请给它们设置不同的 `sandbox_status_context`。否则它们共用同一个状态名和同一条评论，后跑完的会覆盖先跑完的结果。
 
 | 情况 | state | description |
 |---|---|---|

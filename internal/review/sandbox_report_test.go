@@ -186,3 +186,30 @@ func TestRenderSandboxNotesOtherDetectedKinds(t *testing.T) {
 		t.Error("未识别出类型时不应提示")
 	}
 }
+
+func TestCommentMarkerSeparatesSandboxContexts(t *testing.T) {
+	mk := func(ctx string) string {
+		return CommentMarker(Report{NoAI: true, Sandbox: &Sandbox{Context: ctx}})
+	}
+	// 默认 context 沿用旧标记，升级后已发布的评论仍能更新
+	if got := mk("sandbox-tests"); got != SandboxMarker {
+		t.Fatalf("默认 context 应沿用原标记: %q", got)
+	}
+	if got := mk(""); got != SandboxMarker {
+		t.Fatalf("空 context 应沿用原标记: %q", got)
+	}
+	// 不同 context 必须互不相同，否则多个沙盒 job 会互相覆盖评论
+	a, b := mk("sandbox-node"), mk("sandbox-python")
+	if a == b || a == SandboxMarker || b == SandboxMarker {
+		t.Fatalf("不同 context 应有不同标记: %q %q", a, b)
+	}
+	for _, m := range []string{a, b} {
+		if !strings.HasPrefix(m, "<!--") || !strings.HasSuffix(m, "-->") {
+			t.Fatalf("标记必须是合法的 HTML 注释: %q", m)
+		}
+	}
+	// 有 AI 评审时始终用 AI 标记
+	if got := CommentMarker(Report{Sandbox: &Sandbox{Context: "sandbox-node"}}); got != Marker {
+		t.Fatalf("AI 报告应使用 Marker: %q", got)
+	}
+}

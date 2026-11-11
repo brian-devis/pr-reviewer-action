@@ -21,11 +21,15 @@ type Options struct {
 	Source      string // 宿主机上的仓库检出目录（GITHUB_WORKSPACE）
 	Project     Kind   // 留空时自动识别
 	CacheTarget string // 覆盖项目类型决定的依赖缓存挂载点
+	// AlsoDetected 由 Resolve 填写：自动识别选定类型的同时，仓库里还存在的其他项目类型。
+	// 只有识别结果确实决定了镜像或命令时才填，用来提示用户“可能选错了”。
+	AlsoDetected []Kind
 }
 
 // Report 是一次沙盒检查的完整结果。
 type Report struct {
 	Kind    Kind
+	Also    []Kind // 见 Options.AlsoDetected
 	Image   string
 	Memory  string
 	CPUs    string
@@ -38,15 +42,25 @@ type Report struct {
 // 类型对应的默认 test/lint。返回补全后的配置；无法确定要执行什么时返回 ErrNoCommands。
 func Resolve(o Options) (Options, error) {
 	// "auto" 和空值都表示交给 Detect 判断
-	if o.Project == "" || o.Project == "auto" {
+	auto := o.Project == "" || o.Project == "auto"
+	if auto {
 		o.Project = ""
 	}
+	// 识别结果只有在真的决定了镜像或命令时才值得提示
+	influenced := o.Image == "" || (o.TestCmd == "" && o.LintCmd == "")
 	p := Detect(o.Source)
 	if o.Project != "" && o.Project != p.Kind {
 		// 显式指定了项目类型时，只用它的默认命令和准备方式，镜像版本仍按源码目录判断
 		p = projectFor(o.Project, o.Source)
 	}
 	o.Project = p.Kind
+	if auto && influenced {
+		for _, k := range Detected(o.Source) {
+			if k != p.Kind {
+				o.AlsoDetected = append(o.AlsoDetected, k)
+			}
+		}
+	}
 	if o.TestCmd == "" && o.LintCmd == "" {
 		if p.TestCmd == "" {
 			return o, ErrNoCommands
@@ -98,7 +112,7 @@ func defaultOr(v, def string) string {
 // 之后的 test 和 lint 全部断网运行。
 func Run(ctx context.Context, r Runner, o Options) (Report, error) {
 	start := time.Now()
-	rep := Report{Kind: o.Project, Image: o.Image, Memory: o.Memory, CPUs: o.CPUs, Network: "none"}
+	rep := Report{Kind: o.Project, Also: o.AlsoDetected, Image: o.Image, Memory: o.Memory, CPUs: o.CPUs, Network: "none"}
 
 	work, err := os.MkdirTemp("", "prr-work-*")
 	if err != nil {

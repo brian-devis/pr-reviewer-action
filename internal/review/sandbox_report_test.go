@@ -162,3 +162,27 @@ func TestSanitizeRemovesBothMarkers(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestRenderSandboxNotesOtherDetectedKinds(t *testing.T) {
+	s := passedSandbox()
+	s.Kind, s.Also = "go", []string{"node", "python"}
+	got := Render(Report{NoAI: true, Sandbox: s})
+	for _, want := range []string{"自动识别为 **Go**", "Node.js、Python", "sandbox_language"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("缺少 %q:\n%s", want, got)
+		}
+	}
+	// 提示必须在表格之前，否则会打断 Markdown 表格
+	if strings.Index(got, "自动识别为") > strings.Index(got, "| 检查 |") {
+		t.Errorf("提示应在表格之前:\n%s", got)
+	}
+	// 没有其他类型，或类型未知时不输出
+	s.Also = nil
+	if strings.Contains(Render(Report{NoAI: true, Sandbox: s}), "自动识别为") {
+		t.Error("没有其他类型时不应提示")
+	}
+	s.Also, s.Kind = []string{"node"}, ""
+	if strings.Contains(Render(Report{NoAI: true, Sandbox: s}), "自动识别为") {
+		t.Error("未识别出类型时不应提示")
+	}
+}

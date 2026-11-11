@@ -33,7 +33,9 @@ type SandboxStep struct {
 
 // Sandbox 是总评里沙盒测试一节的内容。
 type Sandbox struct {
-	Kind    string // go | node | python | generic，用于展示识别出的项目类型
+	Kind string // go | node | python | generic，用于展示识别出的项目类型
+	// Also 是自动识别时还检测到的其他项目类型，用来提示“可能选错了”。
+	Also    []string
 	Image   string
 	Memory  string
 	CPUs    string
@@ -86,8 +88,31 @@ func SandboxHeadline(steps []SandboxStep) string {
 	return "✅ 沙盒检查通过"
 }
 
+// alsoNote 在自动识别同时命中多种项目类型时给出提示。识别按 Go → Node → Python 的
+// 顺序取第一个，用户可能想要的是另一个，所以不能静默选择。
+func alsoNote(s Sandbox) string {
+	chosen, ok := kindLabels[s.Kind]
+	if !ok || len(s.Also) == 0 {
+		return ""
+	}
+	var others []string
+	for _, k := range s.Also {
+		if label, ok := kindLabels[k]; ok {
+			others = append(others, label)
+		}
+	}
+	if len(others) == 0 {
+		return ""
+	}
+	return "> ℹ️ 自动识别为 **" + chosen + "** 项目，同时还检测到 " + strings.Join(others, "、") +
+		" 的标志文件。如果要检查的是其中另一个，请设置 `sandbox_language`，或直接指定镜像和命令。"
+}
+
 func renderSandbox(b *strings.Builder, s Sandbox) {
 	fmt.Fprintf(b, "\n### 🧪 沙盒测试 · %s\n\n", SandboxHeadline(s.Steps))
+	if note := alsoNote(s); note != "" {
+		b.WriteString(note + "\n\n")
+	}
 
 	b.WriteString("| 检查 | 结果 | 说明 | 耗时 |\n|---|---|---|---|\n")
 	for _, st := range s.Steps {

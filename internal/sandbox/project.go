@@ -86,6 +86,22 @@ func Detect(dir string) Project {
 	}
 }
 
+// Detected 返回仓库里所有匹配的项目类型，顺序与 Detect 的优先级一致。
+// 用来在同时存在多种标志（如 Go 后端加前端）时提示用户，而不是静默选一个。
+func Detected(dir string) []Kind {
+	var kinds []Kind
+	if HasFile(dir, "go.mod") {
+		kinds = append(kinds, KindGo)
+	}
+	if HasFile(dir, "package.json") {
+		kinds = append(kinds, KindNode)
+	}
+	if isPython(dir) {
+		kinds = append(kinds, KindPython)
+	}
+	return kinds
+}
+
 func isPython(dir string) bool {
 	return HasFile(dir, "pyproject.toml") || HasFile(dir, "setup.py") ||
 		HasFile(dir, "requirements.txt") || HasFile(dir, "requirements-dev.txt")

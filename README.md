@@ -126,7 +126,7 @@ jobs:
 | Python | `pyproject.toml`、`setup.py`、`requirements.txt` | `python:<.python-version / requires-python，默认 3.12>` | `python -m pytest -q` | `python -m compileall -q .` | `pip install --only-binary=:all: --target /deps -r requirements.txt` |
 | 其他 | — | 需自己指定 | 需自己指定 | 需自己指定 | 不联网 |
 
-同时存在多种标志时按 Go → Node → Python 的顺序取第一个。识别错了就用 `sandbox_language` 指定类型，或者直接写死镜像和命令。
+同时存在多种标志时按 Go → Node → Python 的顺序取第一个（例如 Go 后端加前端的仓库会被识别为 Go）。这时总评里会注明“自动识别为 Go，同时还检测到 Node.js 的标志文件”，识别错了就用 `sandbox_language` 指定类型，或者直接写死镜像和命令。显式指定了 `sandbox_language`，或者镜像和命令都已写死时不会出现这条提示。
 
 `npm test` / `npm run lint` 都带 `--if-present`：项目没定义对应脚本时不算失败，所以大多数没有 `lint` 脚本的 Node 项目仍能正常通过。
 

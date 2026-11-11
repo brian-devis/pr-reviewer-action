@@ -49,6 +49,9 @@ func runSandbox(ctx context.Context, cfg *config.Config, r sandbox.Runner) (revi
 	}
 	section.Image = opts.Image
 	section.Kind = string(opts.Project)
+	for _, k := range opts.AlsoDetected {
+		section.Also = append(section.Also, string(k))
+	}
 
 	rep, err := sandbox.Run(ctx, r, opts)
 	if err != nil {

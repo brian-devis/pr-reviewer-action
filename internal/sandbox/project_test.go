@@ -154,3 +154,49 @@ func TestRunNodeAndPythonOrchestration(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveReportsOtherDetectedKinds(t *testing.T) {
+	// Go 后端加前端：识别按优先级选 Go，但必须把 Node 也报告出来，不能静默选择
+	dir := goProject(t)
+	write(t, filepath.Join(dir, "package.json"), `{"name":"web"}`)
+
+	o, err := Resolve(Options{Source: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.Project != KindGo || len(o.AlsoDetected) != 1 || o.AlsoDetected[0] != KindNode {
+		t.Fatalf("应选 Go 并报告 Node: project=%s also=%v", o.Project, o.AlsoDetected)
+	}
+
+	// 显式指定类型：用户已经做了选择，不再提示
+	o, _ = Resolve(Options{Source: dir, Project: KindNode})
+	if len(o.AlsoDetected) != 0 {
+		t.Fatalf("显式指定 sandbox_language 时不应提示: %v", o.AlsoDetected)
+	}
+	o, _ = Resolve(Options{Source: dir, Project: "auto"})
+	if o.Project != KindGo || len(o.AlsoDetected) != 1 {
+		t.Fatalf("auto 等同于自动识别: %+v", o)
+	}
+
+	// 镜像和命令都写死了，识别结果没有决定任何东西，提示只是噪音
+	o, _ = Resolve(Options{Source: dir, Image: "golang:1.25", TestCmd: "make test"})
+	if len(o.AlsoDetected) != 0 {
+		t.Fatalf("配置已写死时不应提示: %v", o.AlsoDetected)
+	}
+
+	// 只有一种类型时没有可提示的
+	o, _ = Resolve(Options{Source: goProject(t)})
+	if len(o.AlsoDetected) != 0 {
+		t.Fatalf("%v", o.AlsoDetected)
+	}
+}
+
+func TestDetectedKeepsPriorityOrder(t *testing.T) {
+	dir := pythonProject(t)
+	write(t, filepath.Join(dir, "package.json"), `{}`)
+	write(t, filepath.Join(dir, "go.mod"), "module x\n\ngo 1.22\n")
+	got := Detected(dir)
+	if len(got) != 3 || got[0] != KindGo || got[1] != KindNode || got[2] != KindPython {
+		t.Fatalf("%v", got)
+	}
+}

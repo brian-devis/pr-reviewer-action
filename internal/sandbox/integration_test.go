@@ -291,9 +291,14 @@ func TestIntegrationPythonProjectWithDependenciesPasses(t *testing.T) {
 def double(x):
     return six.text_type(x) * 2
 `)
-	write(t, filepath.Join(dir, "demo_test.py"), `from demo import double
+	write(t, filepath.Join(dir, "demo_test.py"), `import unittest
 
-assert double("ab") == "abab", double("ab")
+from demo import double
+
+
+class DoubleTest(unittest.TestCase):
+    def test_double(self):
+        self.assertEqual(double("ab"), "abab")
 `)
 	opts, err := Resolve(Options{Source: dir, Memory: "1g", CPUs: "1", Timeout: 5 * time.Minute,
 		TestCmd: `python -m unittest discover -v -p "*_test.py"`})

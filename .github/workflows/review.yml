@@ -114,9 +114,14 @@ jobs:
               return six.text_type(x) * 2
           PY
           cat > demo_test.py <<'PY'
+          import unittest
+
           from demo import double
 
-          assert double("ab") == "abab", double("ab")
+
+          class DoubleTest(unittest.TestCase):
+              def test_double(self):
+                  self.assertEqual(double("ab"), "abab")
           PY
       - uses: ./action-src
         with:

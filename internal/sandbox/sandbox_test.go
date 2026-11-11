@@ -205,6 +205,7 @@ func TestClassify(t *testing.T) {
 		{"通过", Result{}, Passed},
 		{"命令失败", Result{ExitCode: 1}, Failed},
 		{"OOM 是 error", Result{ExitCode: 137, OOM: true}, Errored},
+		{"疑似 OOM 是 error", Result{ExitCode: 137, SuspectedOOM: true}, Errored},
 		{"超时是 error", Result{ExitCode: 137, TimedOut: true}, Errored},
 		{"docker 错误是 error", Result{Err: errors.New("x")}, Errored},
 	}
@@ -480,5 +481,17 @@ func TestRunNonGoProjectSkipsDependencyPrep(t *testing.T) {
 	}
 	if len(f.specs) != 1 || f.specs[0].Network != "none" || f.specs[0].CacheDir != "" {
 		t.Fatalf("非 Go 项目不应联网准备依赖: %+v", f.specs)
+	}
+}
+
+func TestSuspectedOOMDetailDoesNotClaimCertainty(t *testing.T) {
+	r := Result{ExitCode: 137, SuspectedOOM: true}
+	r.Status = Classify(r)
+	d := r.Detail()
+	if r.Status != Errored || !strings.Contains(d, "疑似") || !strings.Contains(d, "137") {
+		t.Fatalf("疑似 OOM 应是 error，且说明里要体现“疑似”: %s %q", r.Status, d)
+	}
+	if confirmed := (Result{OOM: true}).Detail(); strings.Contains(confirmed, "疑似") {
+		t.Fatalf("确认的 OOM 不应写“疑似”: %q", confirmed)
 	}
 }

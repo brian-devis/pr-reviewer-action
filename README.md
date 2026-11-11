@@ -153,9 +153,11 @@ jobs:
 | 开始执行 | `pending` | Sandbox checks running |
 | 测试和 Lint 都通过 | `success` | All sandbox checks passed |
 | 测试或 Lint 没通过（退出码非 0） | `failure` | Sandbox checks failed |
-| Docker 异常、依赖准备失败、超时、内存溢出 | `error` | Sandbox execution error |
+| Docker 异常、依赖准备失败、超时、内存溢出（含疑似） | `error` | Sandbox execution error |
 
 没通过是 `failure`，沙盒自身出问题是 `error`，两者不会混在一起：环境问题不会被算成代码问题。
+
+关于内存溢出：Docker 的 `OOMKilled` 标志在部分环境里会随机丢失（内核日志显示 OOM kill 确实发生了，Docker 却报告 false）。所以容器以退出码 137（SIGKILL）结束、且不是因为超时时，一律按 `error` 处理，总评里写“疑似内存溢出”。代价是测试代码自己执行 `kill -9` 也会被归为 `error`；这是有意的取舍，宁可提示资源问题，也不把它当成测试失败。
 
 ### 命令和镜像
 

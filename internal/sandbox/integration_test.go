@@ -112,8 +112,10 @@ func TestIntegrationOOMIsDetected(t *testing.T) {
 		// 字符串每轮翻倍，很快超出内存限制
 		s.Command = `awk 'BEGIN{s="x"; while(1) s = s s}'`
 	})
-	if !res.OOM || res.Status != Errored {
-		t.Fatalf("应识别为 OOM 且状态为 error，got %+v", res)
+	// Docker 的 OOMKilled 标志在部分环境里会随机丢失，所以接受“确认”或“疑似”两种结果，
+	// 但无论哪种都必须是 error，不能被当成测试失败。
+	if !(res.OOM || res.SuspectedOOM) || res.Status != Errored {
+		t.Fatalf("应识别为（疑似）OOM 且状态为 error，got %+v", res)
 	}
 }
 

@@ -150,6 +150,10 @@ type Result struct {
 	ExitCode  int
 	Duration  time.Duration
 	OOM       bool
+	// SuspectedOOM 表示容器被 SIGKILL 杀掉（退出码 137），但 Docker 没有给出 OOMKilled 标志。
+	// 部分环境下 Docker 会随机丢失这个标志（内核日志里 OOM kill 实际发生了），
+	// 所以不能只信标志：这种情况按资源问题处理，而不是当成测试失败。
+	SuspectedOOM bool
 	TimedOut  bool
 	Output    string // 末尾的输出，已截断
 	Truncated bool
@@ -164,6 +168,8 @@ func (r Result) Detail() string {
 		return "沙盒错误：" + r.Err.Error()
 	case r.OOM:
 		return "内存溢出被终止（超过内存限制）"
+	case r.SuspectedOOM:
+		return "被 SIGKILL 终止（退出码 137），疑似内存溢出（超过内存限制）"
 	case r.TimedOut:
 		return "执行超时被终止"
 	case r.Status == Failed:
@@ -178,7 +184,7 @@ func (r Result) Detail() string {
 // 不能简单当作“测试没通过”。
 func Classify(r Result) Status {
 	switch {
-	case r.Err != nil, r.OOM, r.TimedOut:
+	case r.Err != nil, r.OOM, r.SuspectedOOM, r.TimedOut:
 		return Errored
 	case r.ExitCode == 0:
 		return Passed

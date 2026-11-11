@@ -25,6 +25,25 @@ jobs:
               -o "dist/reviewer-linux-$arch" ./cmd/reviewer
           done
           (cd dist && sha256sum reviewer-linux-* > checksums.txt && cat checksums.txt)
+      # GitHub 托管的 runner 预装了 gh，自托管 runner 没有。只在缺失时安装。
+      - name: Ensure gh CLI
+        shell: bash
+        run: |
+          if command -v gh >/dev/null 2>&1; then
+            echo "已安装 $(gh --version | head -1)"
+            exit 0
+          fi
+          case "$(uname -m)" in
+            x86_64) arch=amd64 ;;
+            aarch64|arm64) arch=arm64 ;;
+            *) echo "::error::不支持的架构 $(uname -m)"; exit 1 ;;
+          esac
+          ver=2.63.2
+          dest="$RUNNER_TEMP/gh"
+          mkdir -p "$dest"
+          curl -fsSL --retry 3 "https://github.com/cli/cli/releases/download/v$ver/gh_${ver}_linux_${arch}.tar.gz"             | tar -xz -C "$dest" --strip-components=1
+          echo "$dest/bin" >> "$GITHUB_PATH"
+
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}

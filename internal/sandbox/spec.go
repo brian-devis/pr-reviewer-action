@@ -145,18 +145,18 @@ const (
 
 // Result 是一次容器运行的结果。
 type Result struct {
-	Name      string
-	Status    Status
-	ExitCode  int
-	Duration  time.Duration
-	OOM       bool
+	Name     string
+	Status   Status
+	ExitCode int
+	Duration time.Duration
+	OOM      bool
 	// SuspectedOOM 表示容器被 SIGKILL 杀掉（退出码 137），但 Docker 没有给出 OOMKilled 标志。
 	// 部分环境下 Docker 会随机丢失这个标志（内核日志里 OOM kill 实际发生了），
 	// 所以不能只信标志：这种情况按资源问题处理，而不是当成测试失败。
 	SuspectedOOM bool
-	TimedOut  bool
-	Output    string // 末尾的输出，已截断
-	Truncated bool
+	TimedOut     bool
+	Output       string // 末尾的输出，已截断
+	Truncated    bool
 	// Err 是沙盒自身的错误（Docker 起不来、镜像拉取失败等），不是命令失败。
 	Err error
 }

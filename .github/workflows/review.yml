@@ -13,7 +13,7 @@ jobs:
   # AI 评审：需要模型密钥，fork 的 PR 拿不到 secrets，所以跳过
   ai-review:
     if: github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, prr]
     steps:
       - uses: actions/checkout@v4
       - uses: ./
@@ -28,7 +28,8 @@ jobs:
 
   # 沙盒测试：不配置任何模型密钥，独立于 AI 评审运行
   sandbox:
-    runs-on: ubuntu-latest
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, prr]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -50,7 +51,8 @@ jobs:
   # action 仓库 checkout 到子目录，示例项目放在工作区根目录，这样 GITHUB_WORKSPACE
   # 指向的就是示例项目本身（GITHUB_* 变量无法用 step 级 env 覆盖）。
   sandbox-node:
-    runs-on: ubuntu-latest
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, prr]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -93,7 +95,8 @@ jobs:
 
   # Python 沙盒：带第三方依赖，验证 pip --only-binary 准备阶段和断网运行
   sandbox-python:
-    runs-on: ubuntu-latest
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, prr]
     steps:
       - uses: actions/checkout@v4
         with:

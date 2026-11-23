@@ -83,12 +83,7 @@ func run() error {
 		}
 		setStatus(cfg.SandboxStatusContext, state, desc)
 		fmt.Printf("commit status %s: %s（%s）\n", cfg.SandboxStatusContext, state, desc)
-		// 按 sandbox_fail_on 决定沙盒结果是否让步骤失败。沙盒本身无法运行（err != nil）
-		// 时步骤本来就会失败，这里只处理测试/Lint 没通过、超时、内存溢出这类结果。
-		if err == nil && review.SandboxShouldFail(state, cfg.SandboxFailOn) {
-			runErr = errors.Join(runErr,
-				fmt.Errorf("沙盒检查未通过（sandbox_fail_on=%s）：%s", cfg.SandboxFailOn, desc))
-		}
+		runErr = errors.Join(runErr, sandboxExitError(cfg, state, desc, err))
 	}
 
 	var ai aiResult
@@ -118,6 +113,16 @@ func run() error {
 		}
 	}
 	return runErr
+}
+
+// sandboxExitError 返回 sandbox_fail_on 要求导致的失败，不需要失败时返回 nil。
+// 沙盒本身无法运行（sandboxErr != nil）时步骤本来就会失败，这里不重复报告，
+// 只处理测试/Lint 没通过、超时、内存溢出这类“有结果但不通过”的情况。
+func sandboxExitError(cfg *config.Config, state, desc string, sandboxErr error) error {
+	if sandboxErr != nil || !review.SandboxShouldFail(state, cfg.SandboxFailOn) {
+		return nil
+	}
+	return fmt.Errorf("沙盒检查未通过（sandbox_fail_on=%s）：%s", cfg.SandboxFailOn, desc)
 }
 
 // aiResult 是一次 AI 评审的产出：要展示的报告，以及应当设置的 commit status。

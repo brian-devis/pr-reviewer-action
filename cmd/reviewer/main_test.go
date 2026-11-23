@@ -249,3 +249,33 @@ func TestToSectionMapsResults(t *testing.T) {
 		t.Fatalf("%+v", st)
 	}
 }
+
+func TestSandboxExitError(t *testing.T) {
+	tests := []struct {
+		name       string
+		failOn     string
+		state      string
+		sandboxErr error
+		want       bool
+	}{
+		{"never 下失败也不让步骤失败", "never", review.StateFailure, nil, false},
+		{"failure 命中测试没通过", "failure", review.StateFailure, nil, true},
+		{"failure 不覆盖执行异常", "failure", review.StateError, nil, false},
+		{"error 命中执行异常", "error", review.StateError, nil, true},
+		{"error 不覆盖测试没通过", "error", review.StateFailure, nil, false},
+		{"any 两者都命中", "any", review.StateFailure, nil, true},
+		{"any 覆盖执行异常", "any", review.StateError, nil, true},
+		{"通过时不失败", "any", review.StateSuccess, nil, false},
+		// 沙盒本身跑不起来时由调用方已有的 err 负责，这里不重复报告
+		{"沙盒错误已存在时不重复", "any", review.StateError, errors.New("docker unavailable"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{SandboxFailOn: tt.failOn}
+			got := sandboxExitError(cfg, tt.state, "desc", tt.sandboxErr) != nil
+			if got != tt.want {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

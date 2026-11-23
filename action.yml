@@ -56,9 +56,13 @@ inputs:
     required: false
     default: none
   sandbox_status_context:
-    description: "沙盒的 commit status 名称"
+    description: "沙盒的 commit status 名称；多个沙盒 job 要各自设成不同值，评论和状态才不会互相覆盖"
     required: false
     default: sandbox-tests
+  sandbox_fail_on:
+    description: "沙盒结果达到该程度时让步骤失败（job 显示红叉）：never（默认，只写 commit status）、failure（测试或 Lint 没通过）、error（沙盒执行异常，如超时、内存溢出）、any（两者都算）"
+    required: false
+    default: never
   api_base_url:
     description: "模型服务地址；留空时按 api_format 使用默认值（openai: https://api.openai.com/v1，anthropic: https://api.anthropic.com）"
     required: false
@@ -173,4 +177,5 @@ runs:
         INPUT_SANDBOX_TIMEOUT: ${{ inputs.sandbox_timeout }}
         INPUT_SANDBOX_NETWORK: ${{ inputs.sandbox_network }}
         INPUT_SANDBOX_STATUS_CONTEXT: ${{ inputs.sandbox_status_context }}
+        INPUT_SANDBOX_FAIL_ON: ${{ inputs.sandbox_fail_on }}
       run: '"$REVIEWER_BIN"'

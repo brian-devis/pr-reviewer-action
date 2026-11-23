@@ -71,6 +71,7 @@ jobs:
 | `sandbox_timeout` | `5m` | 每个步骤的超时，最长 `1h` |
 | `sandbox_network` | `none` | 目前只支持 `none` |
 | `sandbox_status_context` | `sandbox-tests` | 沙盒 commit status 的名称；同一仓库有多个沙盒 job 时各自设成不同的值，评论和状态才不会互相覆盖 |
+| `sandbox_fail_on` | `never` | 沙盒结果达到该程度时让步骤失败：`never` 只写状态；`failure` 测试/Lint 没通过；`error` 沙盒执行异常；`any` 两者都算 |
 | `exclude_paths` | 空 | 额外排除的路径，逗号或换行分隔；`dir/` 表示目录，`*.md` 之类按 `path.Match` 匹配（不支持 `**`） |
 
 ## 作为合并门禁
@@ -158,6 +159,32 @@ jobs:
 | Docker 异常、依赖准备失败、超时、内存溢出（含疑似） | `error` | Sandbox execution error |
 
 没通过是 `failure`，沙盒自身出问题是 `error`，两者不会混在一起：环境问题不会被算成代码问题。
+
+### 让失败在 CI 里可见
+
+默认（`sandbox_fail_on: never`）下，步骤的退出码不受沙盒结果影响：测试没通过时 job 仍然显示绿色，结论只写在 commit status 和评论里。这样做的好处是可以把 `sandbox-tests` 设为分支保护的必需检查，由状态决定能否合并，而不是让整个 workflow 变红。
+
+但这也意味着 **job 成功不代表测试通过**。如果你希望失败直接体现为红叉（例如没有配置分支保护，或者想让失败更醒目），把 `sandbox_fail_on` 设成：
+
+| 取值 | 什么时候让步骤失败 |
+|---|---|
+| `never`（默认） | 从不 |
+| `failure` | 测试或 Lint 没通过（`failure`） |
+| `error` | 沙盒执行异常，如超时、内存溢出、依赖准备失败（`error`） |
+| `any` | 以上两者 |
+
+```yaml
+- uses: brian-devis/pr-reviewer-action@v0
+  with:
+    enable_ai_review: "false"
+    enable_sandbox: "true"
+    sandbox_fail_on: any
+```
+
+两点说明：
+
+- 沙盒**根本跑不起来**（Docker 不可用、没有可执行的命令、复制工作副本失败）时步骤始终失败，与这个开关无关：检查没有真正执行，不应该被当成通过。
+- 启用后，评论和 commit status 仍会照常发布，退出码是在这些操作之后才设置的。同时配置分支保护里的 `sandbox-tests` 是多余的，二选一即可。
 
 关于内存溢出：Docker 的 `OOMKilled` 标志在部分环境里会随机丢失（内核日志显示 OOM kill 确实发生了，Docker 却报告 false）。所以容器以退出码 137（SIGKILL）结束、且不是因为超时时，一律按 `error` 处理，总评里写“疑似内存溢出”。代价是测试代码自己执行 `kill -9` 也会被归为 `error`；这是有意的取舍，宁可提示资源问题，也不把它当成测试失败。
 

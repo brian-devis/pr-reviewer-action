@@ -72,3 +72,46 @@ func TestDecideDescriptionShowsCounts(t *testing.T) {
 		t.Fatalf("描述应带统计: %q", desc)
 	}
 }
+
+func TestValidSandboxFailOn(t *testing.T) {
+	for _, ok := range []string{"never", "failure", "error", "any"} {
+		if !ValidSandboxFailOn(ok) {
+			t.Errorf("%q 应合法", ok)
+		}
+	}
+	// warning 是 AI fail_on 的取值，不是沙盒的；大小写不合法由配置层统一小写处理
+	for _, bad := range []string{"", "warning", "Failure", "all"} {
+		if ValidSandboxFailOn(bad) {
+			t.Errorf("%q 应不合法", bad)
+		}
+	}
+}
+
+func TestSandboxShouldFail(t *testing.T) {
+	tests := []struct {
+		failOn string
+		state  string
+		want   bool
+	}{
+		{"never", StateSuccess, false},
+		{"never", StateFailure, false},
+		{"never", StateError, false},
+		{"failure", StateSuccess, false},
+		{"failure", StateFailure, true},
+		{"failure", StateError, false},
+		{"error", StateSuccess, false},
+		{"error", StateFailure, false},
+		{"error", StateError, true},
+		{"any", StateSuccess, false},
+		{"any", StateFailure, true},
+		{"any", StateError, true},
+		// 未知取值按 never 处理，不应该意外让步骤失败
+		{"", StateFailure, false},
+		{"bogus", StateError, false},
+	}
+	for _, tt := range tests {
+		if got := SandboxShouldFail(tt.state, tt.failOn); got != tt.want {
+			t.Errorf("SandboxShouldFail(%q, %q) = %v, want %v", tt.state, tt.failOn, got, tt.want)
+		}
+	}
+}

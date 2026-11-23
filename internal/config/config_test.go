@@ -356,3 +356,34 @@ func TestStatusContextMustBeSelectorSafe(t *testing.T) {
 		t.Fatalf("合法名称应通过: %v", err)
 	}
 }
+
+func TestSandboxFailOn(t *testing.T) {
+	sandboxOnly(t)
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.SandboxFailOn != "never" {
+		t.Fatalf("默认应为 never，got %q", c.SandboxFailOn)
+	}
+
+	for _, ok := range []string{"failure", "error", "any", " NEVER "} {
+		sandboxOnly(t)
+		t.Setenv("INPUT_SANDBOX_FAIL_ON", ok)
+		c, err := Load()
+		if err != nil {
+			t.Fatalf("%q 应通过校验: %v", ok, err)
+		}
+		if c.SandboxFailOn != strings.ToLower(strings.TrimSpace(ok)) {
+			t.Fatalf("%q 应被规范化，got %q", ok, c.SandboxFailOn)
+		}
+	}
+
+	for _, bad := range []string{"warning", "all", "true"} {
+		sandboxOnly(t)
+		t.Setenv("INPUT_SANDBOX_FAIL_ON", bad)
+		if _, err := Load(); err == nil {
+			t.Fatalf("%q 应被拒绝", bad)
+		}
+	}
+}

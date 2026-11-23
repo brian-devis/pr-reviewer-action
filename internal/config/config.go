@@ -49,6 +49,9 @@ type Config struct {
 	SandboxCPUs          string
 	SandboxTimeout       time.Duration
 	SandboxStatusContext string
+	// SandboxFailOn 控制沙盒结果是否让步骤以非 0 退出：never | failure | error | any。
+	// 默认 never，保持“结论只写在 commit status 里”的原有行为。
+	SandboxFailOn string
 }
 
 // formatDefaults 是各 API 协议在用户没有填写 api_base_url / model 时的默认值。
@@ -154,6 +157,10 @@ func (c *Config) loadSandbox() error {
 	c.SandboxStatusContext = envDefault("INPUT_SANDBOX_STATUS_CONTEXT", "sandbox-tests")
 	if !contextRe.MatchString(c.SandboxStatusContext) {
 		return fmt.Errorf("sandbox_status_context 取值无效 %q，只允许字母、数字、点、下划线和连字符（最长 100）", c.SandboxStatusContext)
+	}
+	c.SandboxFailOn = strings.ToLower(envDefault("INPUT_SANDBOX_FAIL_ON", "never"))
+	if !review.ValidSandboxFailOn(c.SandboxFailOn) {
+		return fmt.Errorf("sandbox_fail_on 取值无效 %q，可选 never、failure、error、any", c.SandboxFailOn)
 	}
 
 	if c.Workspace == "" {

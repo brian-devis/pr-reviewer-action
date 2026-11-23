@@ -44,6 +44,7 @@ jobs:
           enable_sandbox: "true"
           sandbox_test_command: go test ./...
           sandbox_lint_command: go vet ./...
+          sandbox_fail_on: any   # 自测：结果不对就让 CI 变红，而不是只写 status
 
   # Node 沙盒：用一个带依赖和 postinstall 脚本的小项目，验证自动识别、离线运行
   # 和“准备阶段不执行安装脚本”。命令直接从 workflow 配置传入，不经过模型。
@@ -94,6 +95,7 @@ jobs:
           enable_sandbox: "true"
           sandbox_language: node
           sandbox_status_context: sandbox-node-tests
+          sandbox_fail_on: any
           sandbox_test_command: npm test
           sandbox_lint_command: npm run lint
 
@@ -136,5 +138,6 @@ jobs:
           enable_sandbox: "true"
           sandbox_language: python
           sandbox_status_context: sandbox-python-tests
+          sandbox_fail_on: any
           sandbox_test_command: python -m unittest discover -v -p "*_test.py"
           sandbox_lint_command: python -m compileall -q demo.py

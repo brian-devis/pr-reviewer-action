@@ -83,6 +83,12 @@ func run() error {
 		}
 		setStatus(cfg.SandboxStatusContext, state, desc)
 		fmt.Printf("commit status %s: %s（%s）\n", cfg.SandboxStatusContext, state, desc)
+		// 按 sandbox_fail_on 决定沙盒结果是否让步骤失败。沙盒本身无法运行（err != nil）
+		// 时步骤本来就会失败，这里只处理测试/Lint 没通过、超时、内存溢出这类结果。
+		if err == nil && review.SandboxShouldFail(state, cfg.SandboxFailOn) {
+			runErr = errors.Join(runErr,
+				fmt.Errorf("沙盒检查未通过（sandbox_fail_on=%s）：%s", cfg.SandboxFailOn, desc))
+		}
 	}
 
 	var ai aiResult

@@ -58,6 +58,7 @@ jobs:
 | `max_diff_bytes` | `60000` | 单次模型请求携带的 diff 上限，超出会分批；单个文件超出会被截断 |
 | `max_requests` | `5` | 单个 PR 最多发起的模型请求数，超出的文件不审查，并在总评里点名 |
 | `fail_on` | `never` | 达到该严重度时把 commit status 设为失败：`never` 只提示；`error` 有 🔴 就失败；`warning` 有 🔴 或 🟡 就失败 |
+| `inline_min_severity` | `warning` | 发布为行内评论的最低严重度：`error`、`warning`、`info`。低于该级别的发现仍计入统计并出现在总评里，不影响 `fail_on` |
 | `status_context` | `ai-review` | commit status 的名称，设为必需检查时在分支保护里选它 |
 | `enable_ai_review` | `true` | 是否启用 AI 评审。设为 `false` 时不会初始化模型，也不要求任何模型配置 |
 | `enable_sandbox` | `false` | 是否启用沙盒测试，见下文“沙盒测试” |
@@ -73,6 +74,18 @@ jobs:
 | `sandbox_status_context` | `sandbox-tests` | 沙盒 commit status 的名称；同一仓库有多个沙盒 job 时各自设成不同的值，评论和状态才不会互相覆盖 |
 | `sandbox_fail_on` | `never` | 沙盒结果达到该程度时让步骤失败：`never` 只写状态；`failure` 测试/Lint 没通过；`error` 沙盒执行异常；`any` 两者都算 |
 | `exclude_paths` | 空 | 额外排除的路径，逗号或换行分隔；`dir/` 表示目录，`*.md` 之类按 `path.Match` 匹配（不支持 `**`） |
+
+## 行内评论的门槛
+
+默认只有 🔴 error 和 🟡 warning 会发布为行内评论，🔵 info 只出现在总评的“低于行内评论门槛的发现”一节里。这样既保留了信息，又不会让低价值的建议刷满 Files changed。
+
+| `inline_min_severity` | 发布为行内评论 |
+|---|---|
+| `error` | 只有 🔴 |
+| `warning`（默认） | 🔴 和 🟡 |
+| `info` | 全部，等同于旧版本行为 |
+
+被门槛挡下的发现**仍然计入总评的统计**，也仍然参与 `fail_on` 判定和 `ai-review` 状态计算——降噪只影响“发布成行内评论”这一步，不改变门禁。
 
 ## 作为合并门禁
 

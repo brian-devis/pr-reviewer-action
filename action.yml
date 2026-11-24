@@ -87,6 +87,10 @@ inputs:
     description: "达到该严重度时把 commit status 设为失败：never（默认，只提示）、error（有 error 级问题）、warning（有 error 或 warning 级问题）。需要 statuses: write 权限"
     required: false
     default: never
+  inline_min_severity:
+    description: "发布为行内评论的最低严重度：error、warning（默认）、info。低于该级别的发现仍计入统计并出现在总评里，不影响 fail_on"
+    required: false
+    default: warning
   status_context:
     description: "commit status 的名称，分支保护里选择它作为必需检查"
     required: false
@@ -164,6 +168,7 @@ runs:
         INPUT_MAX_REQUESTS: ${{ inputs.max_requests }}
         INPUT_EXCLUDE_PATHS: ${{ inputs.exclude_paths }}
         INPUT_FAIL_ON: ${{ inputs.fail_on }}
+        INPUT_INLINE_MIN_SEVERITY: ${{ inputs.inline_min_severity }}
         INPUT_STATUS_CONTEXT: ${{ inputs.status_context }}
         INPUT_ENABLE_AI_REVIEW: ${{ inputs.enable_ai_review }}
         INPUT_ENABLE_SANDBOX: ${{ inputs.enable_sandbox }}

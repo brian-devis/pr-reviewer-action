@@ -145,3 +145,69 @@ func TestRenderOrphanWithoutLine(t *testing.T) {
 		t.Fatalf("行号为 0 时不应显示 :0:\n%s", got)
 	}
 }
+
+func TestSplitBySeverity(t *testing.T) {
+	comments := []Comment{
+		{File: "a.go", Line: 1, Severity: "error", Message: "e"},
+		{File: "a.go", Line: 2, Severity: "warning", Message: "w"},
+		{File: "a.go", Line: 3, Severity: "info", Message: "i"},
+		{File: "a.go", Line: 4, Severity: "INFO", Message: "i2"}, // 大小写不敏感
+	}
+	tests := []struct {
+		min          string
+		wantInline   int
+		wantDeferred int
+	}{
+		{"error", 1, 3},
+		{"warning", 2, 2},
+		{"info", 4, 0},
+		// 无法识别时按 info 处理，不过滤；配置层会拒绝非法值，这里只保证不会误删
+		{"", 4, 0},
+	}
+	for _, tt := range tests {
+		kept, deferred := SplitBySeverity(comments, tt.min)
+		if len(kept) != tt.wantInline || len(deferred) != tt.wantDeferred {
+			t.Fatalf("min=%q: inline=%d deferred=%d, want %d/%d",
+				tt.min, len(kept), len(deferred), tt.wantInline, tt.wantDeferred)
+		}
+		if len(kept)+len(deferred) != len(comments) {
+			t.Fatalf("min=%q: 不能丢失评论", tt.min)
+		}
+	}
+}
+
+func TestValidSeverity(t *testing.T) {
+	for _, ok := range []string{"error", "warning", "info"} {
+		if !ValidSeverity(ok) {
+			t.Errorf("%q 应合法", ok)
+		}
+	}
+	for _, bad := range []string{"", "Error", "never", "any"} {
+		if ValidSeverity(bad) {
+			t.Errorf("%q 应不合法", bad)
+		}
+	}
+}
+
+func TestRenderDeferredComments(t *testing.T) {
+	r := Report{
+		Summaries:         []string{"概要"},
+		Files:             1,
+		Inline:            []Comment{{File: "a.go", Line: 1, Severity: "error", Message: "真问题"}},
+		Deferred:          []Comment{{File: "a.go", Line: 9, Severity: "info", Message: "低价值建议"}},
+		InlineMinSeverity: "warning",
+	}
+	got := Render(r)
+	// 低于门槛的发现必须可见，并且仍计入统计
+	for _, want := range []string{
+		"低于行内评论门槛的发现（1 条）", "inline_min_severity=warning", "低价值建议", "a.go:9",
+		"发现 2 个问题（🔴 1 · 🟡 0 · 🔵 1）",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("缺少 %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "未发现明显问题") {
+		t.Error("有评论时不应显示“未发现明显问题”")
+	}
+}

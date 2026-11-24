@@ -202,6 +202,9 @@ func execute(ctx context.Context, cfg *config.Config, gh *ghclient.Client, provi
 		report.Notes = append(report.Notes, fmt.Sprintf(
 			"模型给出的评论过多，已按严重度保留最重要的部分，另有 %d 条被省略。", dropped))
 	}
+	// 低于 inline_min_severity 的发现不发布为行内评论，但仍然保留在总评里。
+	// counts 在上面已经算完，所以门槛不影响 fail_on 判定和 commit status。
+	inline, deferred := review.SplitBySeverity(inline, cfg.InlineMinSeverity)
 	if err := postInline(ctx, gh, cfg, inline); err != nil {
 		// 行内评论提交失败（例如 push 导致行号变化返回 422），退回到总评里展示
 		fmt.Printf("::warning::提交行内评论失败，改为写入总评: %v\n", err)
@@ -210,7 +213,10 @@ func execute(ctx context.Context, cfg *config.Config, gh *ghclient.Client, provi
 		report.Notes = append(report.Notes, "行内评论提交失败，相关问题已列在上方。")
 	}
 	report.Inline, report.Orphans = inline, orphans
-	fmt.Printf("审查完成：%d 条行内评论，%d 条总评内问题\n", len(inline), len(orphans))
+	report.Deferred = deferred
+	report.InlineMinSeverity = cfg.InlineMinSeverity
+	fmt.Printf("审查完成：%d 条行内评论，%d 条总评内问题，%d 条低于行内门槛\n",
+		len(inline), len(orphans), len(deferred))
 
 	incomplete := failures > 0 || unparsed > 0 || len(skipped) > 0
 	state, desc := review.Decide(counts, cfg.FailOn, incomplete)

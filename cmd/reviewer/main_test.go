@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -277,5 +280,110 @@ func TestSandboxExitError(t *testing.T) {
 				t.Fatalf("got %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// reviewServer 起一个假的 GitHub API，记录提交的行内 review。
+type reviewServer struct {
+	posted [][]ghclient.ReviewComment
+}
+
+func newReviewServer(t *testing.T) (*ghclient.Client, *reviewServer, *httptest.Server) {
+	t.Helper()
+	rs := &reviewServer{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/o/r/pulls/1", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Accept") == "application/vnd.github.v3.diff" {
+			w.Write([]byte(`diff --git a/a.go b/a.go
+index 1111111..2222222 100644
+--- a/a.go
++++ b/a.go
+@@ -1,2 +1,3 @@
+ package a
++var x = 1
+ func f() {}
+`))
+			return
+		}
+		w.Write([]byte(`{}`))
+	})
+	mux.HandleFunc("/repos/o/r/pulls/1/comments", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`[]`))
+	})
+	mux.HandleFunc("/repos/o/r/pulls/1/reviews", func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Comments []ghclient.ReviewComment `json:"comments"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("解析 review 请求失败: %v", err)
+		}
+		rs.posted = append(rs.posted, payload.Comments)
+		w.Write([]byte(`{}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return &ghclient.Client{Token: "t", API: srv.URL, Repo: "o/r", HTTP: srv.Client()}, rs, srv
+}
+
+func inlineTestConfig() *config.Config {
+	return &config.Config{
+		PRNumber: 1, HeadSHA: "sha", Model: "m",
+		MaxDiffBytes: 60000, MaxRequests: 5,
+		FailOn: "error", InlineMinSeverity: "warning",
+	}
+}
+
+func TestExecuteFiltersInlineByThresholdWithoutAffectingGate(t *testing.T) {
+	reply := `{"summary":"概要","comments":[
+		{"file":"a.go","line":2,"severity":"error","message":"真问题"},
+		{"file":"a.go","line":2,"severity":"info","message":"低价值建议"}]}`
+
+	gh, rs, _ := newReviewServer(t)
+	res, err := execute(context.Background(), inlineTestConfig(), gh, &fakeProvider{replies: []string{reply}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.report.Inline) != 1 || len(res.report.Deferred) != 1 {
+		t.Fatalf("inline=%d deferred=%d", len(res.report.Inline), len(res.report.Deferred))
+	}
+	if res.report.Deferred[0].Message != "低价值建议" {
+		t.Fatalf("被推迟的应是 info: %+v", res.report.Deferred)
+	}
+	// 只有达到门槛的评论被提交为行内评论
+	if len(rs.posted) != 1 || len(rs.posted[0]) != 1 || !strings.Contains(rs.posted[0][0].Body, "真问题") {
+		t.Fatalf("行内评论提交内容不对: %+v", rs.posted)
+	}
+	// 门槛不改变门禁：error 级问题仍然让 fail_on=error 失败
+	if res.state != review.StateFailure {
+		t.Fatalf("state=%s，error 级问题应触发 failure", res.state)
+	}
+
+	// 只有 info 时：行内评论一条都不发，但状态仍是 success（fail_on=error）
+	infoOnly := `{"summary":"概要","comments":[{"file":"a.go","line":2,"severity":"info","message":"低价值建议"}]}`
+	gh2, rs2, _ := newReviewServer(t)
+	res2, err := execute(context.Background(), inlineTestConfig(), gh2, &fakeProvider{replies: []string{infoOnly}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res2.report.Inline) != 0 || len(res2.report.Deferred) != 1 {
+		t.Fatalf("inline=%d deferred=%d", len(res2.report.Inline), len(res2.report.Deferred))
+	}
+	if len(rs2.posted) != 0 {
+		t.Fatalf("低于门槛的评论不应提交行内 review: %+v", rs2.posted)
+	}
+	if res2.state != review.StateSuccess {
+		t.Fatalf("state=%s，info 不应触发 fail_on=error", res2.state)
+	}
+
+	// 门槛设为 info 时恢复旧行为：全部发布为行内评论
+	cfg := inlineTestConfig()
+	cfg.InlineMinSeverity = "info"
+	gh3, rs3, _ := newReviewServer(t)
+	res3, err := execute(context.Background(), cfg, gh3, &fakeProvider{replies: []string{infoOnly}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res3.report.Deferred) != 0 || len(rs3.posted) != 1 || len(rs3.posted[0]) != 1 {
+		t.Fatalf("threshold=info 时应全部发布: deferred=%d posted=%+v", len(res3.report.Deferred), rs3.posted)
 	}
 }

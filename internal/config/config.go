@@ -37,6 +37,9 @@ type Config struct {
 	Exclude       []string
 	FailOn        string // never | error | warning
 	StatusContext string // AI 评审的 commit status 名称
+	// InlineMinSeverity 控制哪些发现会发布为行内评论：error | warning | info。
+	// 低于门槛的仍然计入统计并出现在总评里，不影响 fail_on 判定。
+	InlineMinSeverity string
 
 	// 沙盒测试
 	Workspace            string // 仓库检出目录（GITHUB_WORKSPACE）
@@ -117,6 +120,10 @@ func (c *Config) loadAI() error {
 	c.Exclude = splitList(os.Getenv("INPUT_EXCLUDE_PATHS"))
 	c.FailOn = strings.ToLower(envDefault("INPUT_FAIL_ON", "never"))
 	c.StatusContext = envDefault("INPUT_STATUS_CONTEXT", "ai-review")
+	c.InlineMinSeverity = strings.ToLower(envDefault("INPUT_INLINE_MIN_SEVERITY", "warning"))
+	if !review.ValidSeverity(c.InlineMinSeverity) {
+		return fmt.Errorf("inline_min_severity 取值无效 %q，可选 error、warning、info", c.InlineMinSeverity)
+	}
 	if !contextRe.MatchString(c.StatusContext) {
 		return fmt.Errorf("status_context 取值无效 %q，只允许字母、数字、点、下划线和连字符（最长 100）", c.StatusContext)
 	}

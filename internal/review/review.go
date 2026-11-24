@@ -154,6 +154,45 @@ func normSeverity(s string) string {
 	}
 }
 
+// ValidSeverity 报告 inline_min_severity 的取值是否合法。
+func ValidSeverity(s string) bool {
+	return s == "error" || s == "warning" || s == "info"
+}
+
+// severityRank 给严重度排序，值越大越严重。评论的 severity 已经过 normSeverity 归一化。
+func severityRank(s string) int {
+	switch s {
+	case "error":
+		return 3
+	case "warning":
+		return 2
+	default:
+		return 1
+	}
+}
+
+// SplitBySeverity 按 inline_min_severity 拆分评论：达到门槛的仍然发布为行内评论，
+// 低于门槛的进入 deferred，由调用方放进总评。返回值保持输入顺序。
+//
+// min 由配置层保证是 error/warning/info 之一；无法识别时按 info 处理，即不过滤。
+func SplitBySeverity(comments []Comment, min string) (kept, deferred []Comment) {
+	threshold := 1
+	switch strings.ToLower(strings.TrimSpace(min)) {
+	case "error":
+		threshold = 3
+	case "warning":
+		threshold = 2
+	}
+	for _, c := range comments {
+		if severityRank(c.Severity) >= threshold {
+			kept = append(kept, c)
+		} else {
+			deferred = append(deferred, c)
+		}
+	}
+	return kept, deferred
+}
+
 // normalizePath 去掉模型可能带上的 "./" 前缀；路径不在 diff 里时，再尝试去掉
 // diff 头部的 "b/" 前缀。已经匹配的路径保持原样，避免误伤真实存在的 b/ 目录。
 func normalizePath(p string, files map[string]*diff.File) string {
@@ -214,8 +253,13 @@ type Report struct {
 	Files     int
 	Inline    []Comment // 已挂到行上的评论
 	Orphans   []Comment // 无法定位到行，随总评展示
-	Notes     []string
-	Model     string
+	// Deferred 是低于 inline_min_severity、没有发布为行内评论的发现。
+	// 它们仍然计入统计，并在总评里单独列出，不因为降噪而消失。
+	Deferred []Comment
+	// InlineMinSeverity 是本次使用的行内评论门槛，用于总评里的说明。
+	InlineMinSeverity string
+	Notes             []string
+	Model             string
 
 	// NoAI 为 true 表示没有启用 AI 评审，总评里不出现 AI 相关的内容。
 	NoAI bool
@@ -251,7 +295,7 @@ func renderAI(b *strings.Builder, r Report) {
 			parts = append(parts, s)
 		}
 	}
-	total := len(r.Inline) + len(r.Orphans)
+	total := len(r.Inline) + len(r.Orphans) + len(r.Deferred)
 	switch {
 	case len(parts) > 0:
 		b.WriteString(strings.Join(parts, "\n\n") + "\n\n")
@@ -260,7 +304,7 @@ func renderAI(b *strings.Builder, r Report) {
 	}
 
 	counts := map[string]int{}
-	for _, c := range append(append([]Comment{}, r.Inline...), r.Orphans...) {
+	for _, c := range append(append(append([]Comment{}, r.Inline...), r.Orphans...), r.Deferred...) {
 		counts[c.Severity]++
 	}
 	fmt.Fprintf(b, "**统计**：审查 %d 个文件 · 发现 %d 个问题（🔴 %d · 🟡 %d · 🔵 %d）\n",
@@ -272,6 +316,23 @@ func renderAI(b *strings.Builder, r Report) {
 	if len(r.Orphans) > 0 {
 		b.WriteString("\n### 其他发现（无法定位到具体行）\n\n")
 		for _, c := range r.Orphans {
+			msg := strings.ReplaceAll(c.Message, "\n", "\n  ")
+			loc := c.File
+			if c.Line > 0 {
+				loc = fmt.Sprintf("%s:%d", c.File, c.Line)
+			}
+			fmt.Fprintf(b, "- %s `%s` %s\n", severityEmoji[c.Severity], loc, msg)
+		}
+	}
+	// 低于门槛的发现不发布为行内评论，但必须仍然可见，否则降噪就变成了隐藏问题
+	if len(r.Deferred) > 0 {
+		min := r.InlineMinSeverity
+		if min == "" {
+			min = "warning"
+		}
+		fmt.Fprintf(b, "\n### 低于行内评论门槛的发现（%d 条）\n\n", len(r.Deferred))
+		fmt.Fprintf(b, "这些发现低于 `inline_min_severity=%s`，没有发布为行内评论，仍计入上面的统计。\n\n", min)
+		for _, c := range r.Deferred {
 			msg := strings.ReplaceAll(c.Message, "\n", "\n  ")
 			loc := c.File
 			if c.Line > 0 {

@@ -37,6 +37,9 @@ type Config struct {
 	Exclude       []string
 	FailOn        string // never | error | warning
 	StatusContext string // AI 评审的 commit status 名称
+	// InlineMinSeverity 控制哪些发现会发布为行内评论：error | warning | info。
+	// 低于门槛的仍然计入统计并出现在总评里，不影响 fail_on 判定。
+	InlineMinSeverity string
 
 	// 沙盒测试
 	Workspace            string // 仓库检出目录（GITHUB_WORKSPACE）
@@ -49,6 +52,9 @@ type Config struct {
 	SandboxCPUs          string
 	SandboxTimeout       time.Duration
 	SandboxStatusContext string
+	// SandboxFailOn 控制沙盒结果是否让步骤以非 0 退出：never | failure | error | any。
+	// 默认 never，保持“结论只写在 commit status 里”的原有行为。
+	SandboxFailOn string
 }
 
 // formatDefaults 是各 API 协议在用户没有填写 api_base_url / model 时的默认值。
@@ -114,6 +120,10 @@ func (c *Config) loadAI() error {
 	c.Exclude = splitList(os.Getenv("INPUT_EXCLUDE_PATHS"))
 	c.FailOn = strings.ToLower(envDefault("INPUT_FAIL_ON", "never"))
 	c.StatusContext = envDefault("INPUT_STATUS_CONTEXT", "ai-review")
+	c.InlineMinSeverity = strings.ToLower(envDefault("INPUT_INLINE_MIN_SEVERITY", "warning"))
+	if !review.ValidSeverity(c.InlineMinSeverity) {
+		return fmt.Errorf("inline_min_severity 取值无效 %q，可选 error、warning、info", c.InlineMinSeverity)
+	}
 	if !contextRe.MatchString(c.StatusContext) {
 		return fmt.Errorf("status_context 取值无效 %q，只允许字母、数字、点、下划线和连字符（最长 100）", c.StatusContext)
 	}
@@ -154,6 +164,10 @@ func (c *Config) loadSandbox() error {
 	c.SandboxStatusContext = envDefault("INPUT_SANDBOX_STATUS_CONTEXT", "sandbox-tests")
 	if !contextRe.MatchString(c.SandboxStatusContext) {
 		return fmt.Errorf("sandbox_status_context 取值无效 %q，只允许字母、数字、点、下划线和连字符（最长 100）", c.SandboxStatusContext)
+	}
+	c.SandboxFailOn = strings.ToLower(envDefault("INPUT_SANDBOX_FAIL_ON", "never"))
+	if !review.ValidSandboxFailOn(c.SandboxFailOn) {
+		return fmt.Errorf("sandbox_fail_on 取值无效 %q，可选 never、failure、error、any", c.SandboxFailOn)
 	}
 
 	if c.Workspace == "" {

@@ -56,9 +56,13 @@ inputs:
     required: false
     default: none
   sandbox_status_context:
-    description: "沙盒的 commit status 名称"
+    description: "沙盒的 commit status 名称；多个沙盒 job 要各自设成不同值，评论和状态才不会互相覆盖"
     required: false
     default: sandbox-tests
+  sandbox_fail_on:
+    description: "沙盒结果达到该程度时让步骤失败（job 显示红叉）：never（默认，只写 commit status）、failure（测试或 Lint 没通过）、error（沙盒执行异常，如超时、内存溢出）、any（两者都算）"
+    required: false
+    default: never
   api_base_url:
     description: "模型服务地址；留空时按 api_format 使用默认值（openai: https://api.openai.com/v1，anthropic: https://api.anthropic.com）"
     required: false
@@ -83,6 +87,10 @@ inputs:
     description: "达到该严重度时把 commit status 设为失败：never（默认，只提示）、error（有 error 级问题）、warning（有 error 或 warning 级问题）。需要 statuses: write 权限"
     required: false
     default: never
+  inline_min_severity:
+    description: "发布为行内评论的最低严重度：error、warning（默认）、info。低于该级别的发现仍计入统计并出现在总评里，不影响 fail_on"
+    required: false
+    default: warning
   status_context:
     description: "commit status 的名称，分支保护里选择它作为必需检查"
     required: false
@@ -160,6 +168,7 @@ runs:
         INPUT_MAX_REQUESTS: ${{ inputs.max_requests }}
         INPUT_EXCLUDE_PATHS: ${{ inputs.exclude_paths }}
         INPUT_FAIL_ON: ${{ inputs.fail_on }}
+        INPUT_INLINE_MIN_SEVERITY: ${{ inputs.inline_min_severity }}
         INPUT_STATUS_CONTEXT: ${{ inputs.status_context }}
         INPUT_ENABLE_AI_REVIEW: ${{ inputs.enable_ai_review }}
         INPUT_ENABLE_SANDBOX: ${{ inputs.enable_sandbox }}
@@ -173,4 +182,5 @@ runs:
         INPUT_SANDBOX_TIMEOUT: ${{ inputs.sandbox_timeout }}
         INPUT_SANDBOX_NETWORK: ${{ inputs.sandbox_network }}
         INPUT_SANDBOX_STATUS_CONTEXT: ${{ inputs.sandbox_status_context }}
+        INPUT_SANDBOX_FAIL_ON: ${{ inputs.sandbox_fail_on }}
       run: '"$REVIEWER_BIN"'

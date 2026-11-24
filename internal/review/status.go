@@ -36,6 +36,29 @@ func ValidFailOn(s string) bool {
 	return s == "never" || s == "error" || s == "warning"
 }
 
+// ValidSandboxFailOn 报告 sandbox_fail_on 的取值是否合法。
+func ValidSandboxFailOn(s string) bool {
+	return s == "never" || s == "failure" || s == "error" || s == "any"
+}
+
+// SandboxShouldFail 报告沙盒结果是否应让本次运行以非 0 退出。
+//
+// state 是沙盒 commit status 的状态：failure 表示测试或 Lint 没通过，
+// error 表示沙盒自身出问题（Docker 异常、超时、内存溢出等）。
+// never 时永远不失败，结论只体现在 commit status 和评论里。
+func SandboxShouldFail(state, failOn string) bool {
+	switch failOn {
+	case "failure":
+		return state == StateFailure
+	case "error":
+		return state == StateError
+	case "any":
+		return state == StateFailure || state == StateError
+	default:
+		return false
+	}
+}
+
 // Decide 根据问题数量、fail_on 阈值和审查是否完整，给出 commit status 的状态和描述。
 // incomplete 表示有模型请求失败或有文件因额度被跳过。
 //

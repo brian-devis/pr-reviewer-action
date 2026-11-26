@@ -11,6 +11,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/brian-devis/pr-reviewer-action/internal/httpx"
 )
@@ -21,6 +23,10 @@ const (
 	maxSSELineBytes = 8 << 20
 	// maxSSETotalBytes 是拼接后内容的总上限，避免无限制缓冲异常流。
 	maxSSETotalBytes = 32 << 20
+	// defaultStreamIdleTimeout 是 SSE 流式读取的空闲超时默认值。
+	// 上游建立 SSE 连接后若中途不再吐字，客户端最多等待该时长后主动中断并重试，
+	// 避免一直阻塞到整个 http.Client.Timeout（5 分钟）才失败。
+	defaultStreamIdleTimeout = 45 * time.Second
 )
 
 // Request 是一次与厂商无关的补全请求。
@@ -42,6 +48,17 @@ type OpenAI struct {
 	BaseURL string
 	APIKey  string
 	HTTP    *http.Client
+	// StreamIdleTimeout 是 SSE 流式读取的空闲超时；零值或负值时使用 defaultStreamIdleTimeout。
+	// 单元测试可注入较短超时以加速验证。
+	StreamIdleTimeout time.Duration
+}
+
+// streamIdleTimeout 返回实际生效的 SSE 空闲超时。
+func (o *OpenAI) streamIdleTimeout() time.Duration {
+	if o.StreamIdleTimeout > 0 {
+		return o.StreamIdleTimeout
+	}
+	return defaultStreamIdleTimeout
 }
 
 func (o *OpenAI) Complete(ctx context.Context, req Request) (string, error) {
@@ -104,7 +121,7 @@ func (o *OpenAI) call(ctx context.Context, req Request, jsonMode, stream bool) (
 	}, func(resp *http.Response) error {
 		if stream && isSSE(resp) {
 			var err error
-			text, err = parseSSE(resp.Body)
+			text, err = parseSSE(resp.Body, o.streamIdleTimeout())
 			return err
 		}
 		data, err := io.ReadAll(resp.Body)
@@ -143,11 +160,62 @@ func parseNonStream(data []byte) (string, error) {
 	return strings.TrimSpace(out.Choices[0].Message.Content), nil
 }
 
+// idleTimeoutReader 包装流式响应体，为两次成功 Read 之间的间隔增加空闲超时保护。
+// 一旦超过 timeout 没有读到任何新字节，就置位 timedOut 并关闭底层 closer，
+// 解除正在阻塞的 Read；只要上游持续输出 data 行、reasoning 内容或 ": keepalive" 心跳就不会误触发。
+type idleTimeoutReader struct {
+	r        io.Reader
+	closer   io.Closer
+	timer    *time.Timer
+	timeout  time.Duration
+	timedOut atomic.Bool
+}
+
+func newIdleTimeoutReader(r io.Reader, closer io.Closer, timeout time.Duration) *idleTimeoutReader {
+	tr := &idleTimeoutReader{r: r, closer: closer, timeout: timeout}
+	tr.timer = time.AfterFunc(timeout, func() {
+		tr.timedOut.Store(true)
+		if tr.closer != nil {
+			_ = tr.closer.Close()
+		}
+	})
+	return tr
+}
+
+// Read 读到数据即重置空闲计时器；若已超时则不再重复重置，避免重排已关闭的连接。
+func (tr *idleTimeoutReader) Read(p []byte) (int, error) {
+	n, err := tr.r.Read(p)
+	if n > 0 && !tr.timedOut.Load() {
+		tr.timer.Reset(tr.timeout)
+	}
+	return n, err
+}
+
+func (tr *idleTimeoutReader) stop() { tr.timer.Stop() }
+
 // parseSSE 解析 OpenAI SSE（text/event-stream）响应，拼接 choices[0].delta.content。
 // 忽略空行、":" 开头的注释/心跳行与 reasoning_content 等思考字段；遇到 [DONE] 正常结束；
 // 若某 chunk 含顶层 error 对象则立即返回错误；拼接结果为空返回错误。
-func parseSSE(r io.Reader) (string, error) {
-	scanner := bufio.NewScanner(r)
+// idle 是流式空闲超时：任何一条返回路径上只要空闲超时触发，都必须优先返回可重试错误，
+// 绝不把截断后的部分内容当作成功返回。
+func parseSSE(r io.Reader, idle time.Duration) (out string, err error) {
+	if idle <= 0 {
+		idle = defaultStreamIdleTimeout
+	}
+	var closer io.Closer
+	if c, ok := r.(io.Closer); ok {
+		closer = c
+	}
+	tr := newIdleTimeoutReader(r, closer, idle)
+	defer tr.stop()
+	defer func() {
+		// 空闲超时优先级最高：即使提前 EOF、返回了错误对象或已拼接部分内容，也绝不当作成功。
+		if tr.timedOut.Load() {
+			out, err = "", fmt.Errorf("模型流式响应空闲超时（超过 %s 无新数据）", idle)
+		}
+	}()
+
+	scanner := bufio.NewScanner(tr)
 	scanner.Buffer(make([]byte, 64*1024), maxSSELineBytes)
 	var sb strings.Builder
 	for scanner.Scan() {
@@ -198,7 +266,7 @@ func parseSSE(r io.Reader) (string, error) {
 		// 读取层面的错误按传输错误返回，交给 httpx 按 safe 决定是否重试。
 		return "", fmt.Errorf("读取模型流式响应失败: %w", err)
 	}
-	out := strings.TrimSpace(sb.String())
+	out = strings.TrimSpace(sb.String())
 	if out == "" {
 		return "", &httpx.NonRetryable{Err: errors.New("模型返回内容为空")}
 	}

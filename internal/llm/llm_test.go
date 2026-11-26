@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestCompleteSendsAuthAndParsesContent(t *testing.T) {
@@ -216,5 +217,90 @@ func TestCompleteFallsBackToNonStreamOnStream400(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("calls = %d, want 2", calls)
+	}
+}
+
+func TestCompleteIdleTimeoutRetriesAndSucceeds(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&calls, 1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n")
+		if f != nil {
+			f.Flush()
+		}
+		if n == 1 {
+			// 首次请求发送部分 chunk 后挂起，模拟命中上游挂死账号。
+			<-r.Context().Done()
+			return
+		}
+		io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\" done\"}}]}\n\n")
+		io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	o := &OpenAI{BaseURL: srv.URL, APIKey: "k", HTTP: srv.Client(), StreamIdleTimeout: 120 * time.Millisecond}
+	got, err := o.Complete(context.Background(), Request{Model: "m", System: "s", User: "u"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "partial done" {
+		t.Fatalf("content = %q", got)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+}
+
+func TestCompleteSSEIdleTimeoutNotTriggeredBySlowStream(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		chunks := []string{
+			"data: {\"choices\":[{\"delta\":{\"content\":\"A\"}}]}\n\n",
+			": keepalive\n\n",
+			"data: {\"choices\":[{\"delta\":{\"content\":\"B\"}}]}\n\n",
+			": keepalive\n\n",
+			"data: {\"choices\":[{\"delta\":{\"content\":\"C\"}}]}\n\n",
+			"data: [DONE]\n\n",
+		}
+		for _, c := range chunks {
+			io.WriteString(w, c)
+			if f != nil {
+				f.Flush()
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}))
+	defer srv.Close()
+
+	o := &OpenAI{BaseURL: srv.URL, APIKey: "k", HTTP: srv.Client(), StreamIdleTimeout: 120 * time.Millisecond}
+	got, err := o.Complete(context.Background(), Request{Model: "m", System: "s", User: "u"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "ABC" {
+		t.Fatalf("content = %q", got)
+	}
+}
+
+func TestParseSSEIdleTimeoutNoTruncatedContent(t *testing.T) {
+	pr, pw := io.Pipe()
+	go func() {
+		io.WriteString(pw, "data: {\"choices\":[{\"delta\":{\"content\":\"truncated\"}}]}\n\n")
+		// 不再写入，模拟上游吐完部分内容后挂死。
+	}()
+	defer pw.Close()
+
+	got, err := parseSSE(pr, 100*time.Millisecond)
+	if err == nil {
+		t.Fatalf("expected idle timeout error, got content=%q", got)
+	}
+	if !strings.Contains(err.Error(), "空闲超时") {
+		t.Fatalf("error should mention idle timeout, got: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("must not return truncated content, got %q", got)
 	}
 }

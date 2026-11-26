@@ -77,6 +77,25 @@ func TestNewProvider(t *testing.T) {
 	}
 }
 
+func TestNewLLMHTTPClient(t *testing.T) {
+	openai := newLLMHTTPClient("openai")
+	if openai.Timeout != 10*time.Minute {
+		t.Fatalf("openai Timeout = %v, want 10m", openai.Timeout)
+	}
+	tr, ok := openai.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("openai Transport 应为 *http.Transport，实际 %T", openai.Transport)
+	}
+	if tr.ResponseHeaderTimeout != 2*time.Minute {
+		t.Fatalf("openai ResponseHeaderTimeout = %v, want 2m", tr.ResponseHeaderTimeout)
+	}
+
+	anthropic := newLLMHTTPClient("anthropic")
+	if anthropic.Timeout != 10*time.Minute {
+		t.Fatalf("anthropic Timeout = %v, want 10m", anthropic.Timeout)
+	}
+}
+
 func bot(path string, line int, c review.Comment) ghclient.ExistingComment {
 	return ghclient.ExistingComment{Path: path, Line: line, Body: review.RenderInline(c)}
 }

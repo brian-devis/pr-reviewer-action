@@ -56,7 +56,7 @@ func run() error {
 		fmt.Printf("::add-mask::%s\n", cfg.APIKey)
 	}
 
-	timeout := 20 * time.Minute
+	timeout := 25 * time.Minute
 	if cfg.EnableSandbox {
 		timeout += 3 * cfg.SandboxTimeout // 准备依赖、test、lint 各自最多一个超时时长
 	}
@@ -107,7 +107,7 @@ func run() error {
 
 	var ai aiResult
 	if cfg.EnableAI {
-		provider := newProvider(cfg, &http.Client{Timeout: 5 * time.Minute})
+		provider := newProvider(cfg, newLLMHTTPClient(cfg.APIFormat))
 		var err error
 		if ai, err = execute(ctx, cfg, gh, provider); err != nil {
 			// 错误详情可能包含接口返回内容，不写进公开的状态描述里
@@ -293,6 +293,22 @@ func reviewChunk(ctx context.Context, p llm.Provider, model string, chunk []*dif
 		fmt.Printf("::warning::模型返回的内容无法解析为 JSON（第 %d/%d 次）\n", attempt, maxParseAttempts)
 	}
 	return review.Result{}, text, false, nil
+}
+
+// newLLMHTTPClient 构造用于流式模型请求的 HTTP 客户端。Timeout 统一放宽到 10 分钟，
+// 避免慢思考模型持续输出 reasoning_content/content 时被 5 分钟整连接超时误杀；
+// 非 anthropic（OpenAI 流式）额外把 ResponseHeaderTimeout 设为 2 分钟，保证首包
+// 响应头卡死时能快速失败并交给 httpx 重试。
+func newLLMHTTPClient(apiFormat string) *http.Client {
+	client := &http.Client{Timeout: 10 * time.Minute}
+	if apiFormat != "anthropic" {
+		if dt, ok := http.DefaultTransport.(*http.Transport); ok {
+			tr := dt.Clone()
+			tr.ResponseHeaderTimeout = 2 * time.Minute
+			client.Transport = tr
+		}
+	}
+	return client
 }
 
 // newProvider 按 api_format 选择模型协议。config.Load 已经保证 format 合法。

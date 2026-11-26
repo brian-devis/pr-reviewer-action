@@ -160,9 +160,10 @@ func parseNonStream(data []byte) (string, error) {
 	return strings.TrimSpace(out.Choices[0].Message.Content), nil
 }
 
-// idleTimeoutReader 包装流式响应体，为两次成功 Read 之间的间隔增加空闲超时保护。
-// 一旦超过 timeout 没有读到任何新字节，就置位 timedOut 并关闭底层 closer，
-// 解除正在阻塞的 Read；只要上游持续输出 data 行、reasoning 内容或 ": keepalive" 心跳就不会误触发。
+// idleTimeoutReader 包装流式响应体，为两次有效 data 事件之间的间隔增加空闲超时保护。
+// 一旦超过 timeout 没有读到任何有效 data 事件，就置位 timedOut 并关闭底层 closer，
+// 解除正在阻塞的 Read；": keepalive" 等心跳字节不会重置计时器，因此上游挂死但
+// 网关持续发心跳时仍能按时中断并重试。
 type idleTimeoutReader struct {
 	r        io.Reader
 	closer   io.Closer
@@ -182,13 +183,17 @@ func newIdleTimeoutReader(r io.Reader, closer io.Closer, timeout time.Duration) 
 	return tr
 }
 
-// Read 读到数据即重置空闲计时器；若已超时则不再重复重置，避免重排已关闭的连接。
+// Read 只是透传底层读取；空闲计时器由 parseSSE 在读到有效 data 事件时显式调用 reset 重置。
 func (tr *idleTimeoutReader) Read(p []byte) (int, error) {
-	n, err := tr.r.Read(p)
-	if n > 0 && !tr.timedOut.Load() {
-		tr.timer.Reset(tr.timeout)
+	return tr.r.Read(p)
+}
+
+// reset 在读到有效 data 事件时重置空闲计时器；超时已触发则不再重复重置。
+func (tr *idleTimeoutReader) reset() {
+	if tr.timedOut.Load() {
+		return
 	}
-	return n, err
+	tr.timer.Reset(tr.timeout)
 }
 
 func (tr *idleTimeoutReader) stop() { tr.timer.Stop() }
@@ -196,8 +201,9 @@ func (tr *idleTimeoutReader) stop() { tr.timer.Stop() }
 // parseSSE 解析 OpenAI SSE（text/event-stream）响应，拼接 choices[0].delta.content。
 // 忽略空行、":" 开头的注释/心跳行与 reasoning_content 等思考字段；遇到 [DONE] 正常结束；
 // 若某 chunk 含顶层 error 对象则立即返回错误；拼接结果为空返回错误。
-// idle 是流式空闲超时：任何一条返回路径上只要空闲超时触发，都必须优先返回可重试错误，
-// 绝不把截断后的部分内容当作成功返回。
+// idle 是流式空闲超时：只有扫描到非空 data: 行（含 reasoning_content、content 或 [DONE]）
+// 才重置空闲计时器，空行与 ": keepalive" 心跳不重置；任何返回路径上只要空闲超时触发，
+// 都必须优先返回可重试错误，绝不把截断后的部分内容当作成功返回。
 func parseSSE(r io.Reader, idle time.Duration) (out string, err error) {
 	if idle <= 0 {
 		idle = defaultStreamIdleTimeout
@@ -230,6 +236,7 @@ func parseSSE(r io.Reader, idle time.Duration) (out string, err error) {
 		if data == "" {
 			continue
 		}
+		tr.reset()
 		if data == "[DONE]" {
 			break
 		}

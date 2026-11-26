@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/brian-devis/pr-reviewer-action/internal/config"
@@ -22,6 +23,22 @@ func main() {
 		fmt.Printf("::error::%v\n", err)
 		os.Exit(1)
 	}
+}
+
+// reportTimeout 是主评审超时后，用于把结果写回 GitHub 的独立汇报窗口。
+const reportTimeout = 2 * time.Minute
+
+// reportingContext 为 GitHub 汇报调用挑选上下文：当主评审 ctx 已取消、过期，
+// 或者剩余截止时间不足 reportTimeout 时，改用从 Background 派生的独立短超时上下文，
+// 保证主评审耗尽全局超时后仍能把部分结果、错误说明和最终 commit status 写回 GitHub。
+func reportingContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil || parent.Err() != nil {
+		return context.WithTimeout(context.Background(), reportTimeout)
+	}
+	if deadline, ok := parent.Deadline(); ok && time.Until(deadline) < reportTimeout {
+		return context.WithTimeout(context.Background(), reportTimeout)
+	}
+	return parent, func() {}
 }
 
 func run() error {
@@ -59,7 +76,9 @@ func run() error {
 		if cfg.HeadSHA == "" {
 			return
 		}
-		if err := gh.CreateStatus(ctx, cfg.HeadSHA, state, statusContext, desc, cfg.RunURL); err != nil {
+		rctx, cancel := reportingContext(ctx)
+		defer cancel()
+		if err := gh.CreateStatus(rctx, cfg.HeadSHA, state, statusContext, desc, cfg.RunURL); err != nil {
 			fmt.Printf("::warning::设置 commit status %q 失败（请确认 workflow 有 statuses: write 权限）: %v\n", statusContext, err)
 		}
 	}
@@ -108,9 +127,11 @@ func run() error {
 		rep := ai.report
 		rep.NoAI = !ai.reviewed
 		rep.Sandbox = sandboxSection
-		if err := gh.UpsertComment(ctx, cfg.PRNumber, review.CommentMarker(rep), review.Render(rep)); err != nil {
+		rctx, cancel := reportingContext(ctx)
+		if err := gh.UpsertComment(rctx, cfg.PRNumber, review.CommentMarker(rep), review.Render(rep)); err != nil {
 			runErr = errors.Join(runErr, fmt.Errorf("发布评论失败: %w", err))
 		}
+		cancel()
 	}
 	return runErr
 }
@@ -134,6 +155,14 @@ type aiResult struct {
 	reviewed bool
 }
 
+// chunkOutcome 是一次批次审查的结果，由并发 goroutine 写入各自的索引槽位。
+type chunkOutcome struct {
+	res  review.Result
+	text string
+	ok   bool
+	err  error
+}
+
 // execute 完成一次 AI 评审。行内评论在这里发布，总评由调用方合并后统一发布。
 func execute(ctx context.Context, cfg *config.Config, gh *ghclient.Client, provider llm.Provider) (aiResult, error) {
 	raw, err := gh.GetDiff(ctx, cfg.PRNumber)
@@ -155,18 +184,37 @@ func execute(ctx context.Context, cfg *config.Config, gh *ghclient.Client, provi
 	report := review.Report{Files: len(files) - len(skipped), Model: cfg.Model}
 	var all []review.Comment
 	failures, unparsed := 0, 0
+
+	// 有界并发审查各批次：慢思考模型的多个请求同时发出，避免串行累计耗尽全局超时。
+	// 每个批次的结果写入自己的索引槽位，主 goroutine 只读，无共享写竞争。
+	outcomes := make([]chunkOutcome, len(chunks))
+	sem := make(chan struct{}, maxChunkConcurrency)
+	var wg sync.WaitGroup
 	for i, chunk := range chunks {
-		res, text, ok, err := reviewChunk(ctx, provider, cfg.Model, chunk)
-		if err != nil {
+		wg.Add(1)
+		go func(i int, chunk []*diff.File) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			res, text, ok, err := reviewChunk(ctx, provider, cfg.Model, chunk)
+			outcomes[i] = chunkOutcome{res: res, text: text, ok: ok, err: err}
+		}(i, chunk)
+	}
+	wg.Wait()
+
+	for i := range chunks {
+		o := outcomes[i]
+		if o.err != nil {
 			failures++
-			fmt.Printf("::warning::第 %d/%d 批请求失败: %v\n", i+1, len(chunks), err)
+			fmt.Printf("::warning::第 %d/%d 批请求失败: %v\n", i+1, len(chunks), o.err)
 			report.Notes = append(report.Notes, fmt.Sprintf("第 %d/%d 批文件的模型请求失败，这部分未被审查。", i+1, len(chunks)))
 			continue
 		}
-		if !ok {
+		res := o.res
+		if !o.ok {
 			// 解析不出结构化结果，就无法确认这批文件没有问题
 			unparsed++
-			res = review.Result{Summary: text}
+			res = review.Result{Summary: o.text}
 			report.Notes = append(report.Notes, "模型没有返回合法 JSON，已按原文展示，无法生成行内评论。")
 		}
 		report.Summaries = append(report.Summaries, res.Summary)
@@ -223,6 +271,9 @@ func execute(ctx context.Context, cfg *config.Config, gh *ghclient.Client, provi
 	return aiResult{report: report, state: state, desc: desc, reviewed: true}, nil
 }
 
+// maxChunkConcurrency 是并发审查 diff 批次的上限，避免同时打满上游模型的并发额度。
+const maxChunkConcurrency = 3
+
 // maxParseAttempts 是模型返回无法解析的 JSON 时，同一批文件最多请求的次数。
 // 模型偶尔会在字符串里写出未转义的引号，重新生成通常就正常了。
 const maxParseAttempts = 2
@@ -257,7 +308,9 @@ func postInline(ctx context.Context, gh *ghclient.Client, cfg *config.Config, in
 	if len(inline) == 0 {
 		return nil
 	}
-	existing, err := gh.ListReviewComments(ctx, cfg.PRNumber)
+	rctx, cancel := reportingContext(ctx)
+	defer cancel()
+	existing, err := gh.ListReviewComments(rctx, cfg.PRNumber)
 	if err != nil {
 		fmt.Printf("::warning::读取已有行内评论失败，可能出现重复: %v\n", err)
 	}
@@ -265,7 +318,7 @@ func postInline(ctx context.Context, gh *ghclient.Client, cfg *config.Config, in
 	if len(fresh) == 0 {
 		return nil
 	}
-	return gh.CreateReview(ctx, cfg.PRNumber, cfg.HeadSHA,
+	return gh.CreateReview(rctx, cfg.PRNumber, cfg.HeadSHA,
 		fmt.Sprintf("🤖 AI 行内审查：%d 条评论", len(fresh)), fresh)
 }
 

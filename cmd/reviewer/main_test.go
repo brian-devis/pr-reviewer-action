@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -385,5 +387,228 @@ func TestExecuteFiltersInlineByThresholdWithoutAffectingGate(t *testing.T) {
 	}
 	if len(res3.report.Deferred) != 0 || len(rs3.posted) != 1 || len(rs3.posted[0]) != 1 {
 		t.Fatalf("threshold=info 时应全部发布: deferred=%d posted=%+v", len(res3.report.Deferred), rs3.posted)
+	}
+}
+
+// fileNameInUser 从构造好的 prompt 里取出被审查的文件路径，供并发 provider 区分批次。
+func fileNameInUser(user string) string {
+	const marker = "### FILE: "
+	i := strings.Index(user, marker)
+	if i < 0 {
+		return "?"
+	}
+	rest := user[i+len(marker):]
+	if j := strings.IndexByte(rest, '\n'); j >= 0 {
+		rest = rest[:j]
+	}
+	return rest
+}
+
+// concurrentProvider 是线程安全的 provider：用原子计数记录峰值并发度，并让所有请求在
+// 入口处汇合，保证各批次确实同时执行后再按文件路径模拟不同耗时（第 0 批慢于第 2 批）。
+type concurrentProvider struct {
+	peak    atomic.Int32
+	cur     atomic.Int32
+	entered atomic.Int32
+	total   int
+	delay   map[string]time.Duration
+}
+
+func (p *concurrentProvider) Complete(ctx context.Context, req llm.Request) (string, error) {
+	name := fileNameInUser(req.User)
+	n := p.cur.Add(1)
+	defer p.cur.Add(-1)
+	for {
+		pn := p.peak.Load()
+		if n <= pn || p.peak.CompareAndSwap(pn, n) {
+			break
+		}
+	}
+	p.entered.Add(1)
+	for p.entered.Load() < int32(p.total) {
+		time.Sleep(time.Millisecond)
+	}
+	if d, ok := p.delay[name]; ok {
+		time.Sleep(d)
+	}
+	return fmt.Sprintf(`{"summary":"summary-%s","comments":[{"file":"%s","line":1,"severity":"warning","message":"comment-%s"}]}`, name, name, name), nil
+}
+
+// failSomeProvider 对指定文件（批次）返回错误，其余返回正常结果。
+type failSomeProvider struct {
+	fail map[string]bool
+}
+
+func (p *failSomeProvider) Complete(ctx context.Context, req llm.Request) (string, error) {
+	name := fileNameInUser(req.User)
+	if p.fail[name] {
+		return "", errors.New("context deadline exceeded")
+	}
+	return fmt.Sprintf(`{"summary":"summary-%s","comments":[{"file":"%s","line":1,"severity":"warning","message":"comment-%s"}]}`, name, name, name), nil
+}
+
+// multiFileDiffBody 返回包含 3 个文件的 unified diff，配合较小的 MaxDiffBytes 拆成 3 批。
+func multiFileDiffBody() string {
+	var b strings.Builder
+	for _, name := range []string{"a.go", "b.go", "c.go"} {
+		fmt.Fprintf(&b, "diff --git a/%s b/%s\nindex 1111111..2222222 100644\n--- a/%s\n+++ b/%s\n@@ -1,1 +1,30 @@\n package %s\n", name, name, name, name, strings.TrimSuffix(name, ".go"))
+		for j := 0; j < 30; j++ {
+			fmt.Fprintf(&b, "+line %02d in %s\n", j, name)
+		}
+	}
+	return b.String()
+}
+
+// newReviewServerWithDiff 与 newReviewServer 类似，但 GetDiff 返回传入的 diff。
+func newReviewServerWithDiff(t *testing.T, diffBody string) (*ghclient.Client, *reviewServer, *httptest.Server) {
+	t.Helper()
+	rs := &reviewServer{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/o/r/pulls/1", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Accept") == "application/vnd.github.v3.diff" {
+			w.Write([]byte(diffBody))
+			return
+		}
+		w.Write([]byte(`{}`))
+	})
+	mux.HandleFunc("/repos/o/r/pulls/1/comments", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`[]`))
+	})
+	mux.HandleFunc("/repos/o/r/pulls/1/reviews", func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Comments []ghclient.ReviewComment `json:"comments"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("解析 review 请求失败: %v", err)
+		}
+		rs.posted = append(rs.posted, payload.Comments)
+		w.Write([]byte(`{}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return &ghclient.Client{Token: "t", API: srv.URL, Repo: "o/r", HTTP: srv.Client()}, rs, srv
+}
+
+func TestExecuteConcurrentChunksPreserveOrder(t *testing.T) {
+	gh, rs, _ := newReviewServerWithDiff(t, multiFileDiffBody())
+	cfg := inlineTestConfig()
+	cfg.MaxDiffBytes = 200 // 每个文件单独成一批，共 3 批
+	p := &concurrentProvider{total: 3, delay: map[string]time.Duration{"a.go": 200 * time.Millisecond}}
+
+	res, err := execute(context.Background(), cfg, gh, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.peak.Load() < 2 {
+		t.Fatalf("峰值并发度应 >= 2，实际 %d", p.peak.Load())
+	}
+
+	want := []string{"summary-a.go", "summary-b.go", "summary-c.go"}
+	if len(res.report.Summaries) != len(want) {
+		t.Fatalf("摘要数量=%d，期望 %d：%v", len(res.report.Summaries), len(want), res.report.Summaries)
+	}
+	for i := range want {
+		if res.report.Summaries[i] != want[i] {
+			t.Fatalf("摘要顺序被破坏：第 %d 个=%q，期望 %q（全部=%v）", i, res.report.Summaries[i], want[i], res.report.Summaries)
+		}
+	}
+
+	if len(res.report.Inline) != 3 {
+		t.Fatalf("行内评论数量=%d，期望 3", len(res.report.Inline))
+	}
+	for i, name := range []string{"a.go", "b.go", "c.go"} {
+		if res.report.Inline[i].File != name {
+			t.Fatalf("行内评论顺序被破坏：第 %d 个=%s，期望 %s", i, res.report.Inline[i].File, name)
+		}
+	}
+	if len(rs.posted) != 1 || len(rs.posted[0]) != 3 {
+		t.Fatalf("提交的行内评论异常: %+v", rs.posted)
+	}
+	for i, name := range []string{"a.go", "b.go", "c.go"} {
+		if rs.posted[0][i].Path != name {
+			t.Fatalf("提交顺序被破坏：第 %d 个=%s，期望 %s", i, rs.posted[0][i].Path, name)
+		}
+	}
+}
+
+func TestReportingContext(t *testing.T) {
+	ctx, cancel := reportingContext(nil)
+	if ctx == nil || ctx.Err() != nil {
+		t.Fatalf("nil parent 应返回可用上下文")
+	}
+	cancel()
+
+	parent, pc := context.WithCancel(context.Background())
+	pc()
+	ctx, cancel = reportingContext(parent)
+	if ctx == nil || ctx.Err() != nil {
+		t.Fatalf("已取消 parent 应返回可用上下文")
+	}
+	cancel()
+
+	parent, pc = context.WithTimeout(context.Background(), time.Millisecond)
+	defer pc()
+	time.Sleep(5 * time.Millisecond)
+	ctx, cancel = reportingContext(parent)
+	if ctx == nil || ctx.Err() != nil {
+		t.Fatalf("已过期 parent 应返回可用上下文")
+	}
+	cancel()
+
+	parent, pc = context.WithTimeout(context.Background(), time.Second)
+	defer pc()
+	ctx, cancel = reportingContext(parent)
+	if ctx == nil || ctx.Err() != nil || ctx == parent {
+		t.Fatalf("剩余时间不足时应派生新上下文")
+	}
+	cancel()
+
+	parent, pc = context.WithTimeout(context.Background(), 5*time.Minute)
+	defer pc()
+	ctx, cancel = reportingContext(parent)
+	if ctx != parent {
+		t.Fatalf("剩余时间充足时应沿用 parent")
+	}
+	cancel()
+}
+
+func TestPostInlineWithExpiredContext(t *testing.T) {
+	gh, rs, _ := newReviewServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if ctx.Err() == nil {
+		t.Fatal("前置条件：ctx 应已取消")
+	}
+
+	inline := []review.Comment{{File: "a.go", Line: 2, Severity: "error", Message: "问题"}}
+	if err := postInline(ctx, gh, inlineTestConfig(), inline); err != nil {
+		t.Fatalf("过期 ctx 下应仍能提交行内评论: %v", err)
+	}
+	if len(rs.posted) != 1 || len(rs.posted[0]) != 1 {
+		t.Fatalf("应提交 1 条行内评论: %+v", rs.posted)
+	}
+}
+
+func TestExecutePartialFailureStillReports(t *testing.T) {
+	gh, _, _ := newReviewServerWithDiff(t, multiFileDiffBody())
+	cfg := inlineTestConfig()
+	cfg.MaxDiffBytes = 200
+	p := &failSomeProvider{fail: map[string]bool{"b.go": true}}
+
+	res, err := execute(context.Background(), cfg, gh, p)
+	if err != nil {
+		t.Fatalf("部分批次失败不应让整个评审报错: %v", err)
+	}
+	if !res.reviewed {
+		t.Fatal("应返回 reviewed=true")
+	}
+	if len(res.report.Inline) != 2 {
+		t.Fatalf("应保留成功批次的 2 条行内评论，实际 %d", len(res.report.Inline))
+	}
+	if res.state != review.StateError {
+		t.Fatalf("审查不完整应置为 error，实际 %s", res.state)
+	}
+	if !strings.Contains(res.desc, "不完整") {
+		t.Fatalf("描述应带 incomplete 标记: %q", res.desc)
 	}
 }
